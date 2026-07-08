@@ -3,33 +3,78 @@ import type { Scenario } from "../model/types";
 import type { SimResult } from "../engine/simulate";
 import { useStore } from "../store/scenarioStore";
 import { exportToExcel } from "../export/excelExport";
+import { api, BACKUP_FORMAT, type BackupFile } from "../api/client";
+
+function download(data: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: SimResult }) {
   const store = useStore();
+  const dbStatus = useStore((st) => st.dbStatus);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const exportJson = () => {
-    const blob = new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${scenario.name.replace(/[^\w -]/g, "")}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const exportJson = async () => {
+    const filename = `retirement-forecast-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    try {
+      download(await api.exportBackup(), filename);
+    } catch {
+      // Database unreachable: back up what the browser has instead.
+      const backup: BackupFile = {
+        format: BACKUP_FORMAT,
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        activeId: store.activeId,
+        scenarios: store.scenarios,
+      };
+      download(backup, filename);
+    }
   };
 
   const importJson = (file: File) => {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
-        const s = JSON.parse(String(reader.result)) as Scenario;
-        store.importScenario(s);
+        const parsed = JSON.parse(String(reader.result)) as BackupFile | Scenario;
+        if ("format" in parsed && parsed.format === BACKUP_FORMAT && Array.isArray(parsed.scenarios)) {
+          if (parsed.scenarios.length === 0) {
+            alert("That backup file contains no scenarios.");
+            return;
+          }
+          const ok = confirm(
+            `Restore "${file.name}"?\n\nThis replaces ALL ${store.scenarios.length} scenario(s) ` +
+              `in the database with the ${parsed.scenarios.length} scenario(s) from the backup.`,
+          );
+          if (!ok) return;
+          const where = await store.restoreBackup(parsed);
+          if (where === "browser-only") {
+            alert("Database not reachable — the backup was restored to browser storage only.");
+          }
+        } else if ("people" in parsed && "balances" in parsed) {
+          // Legacy single-scenario file: add it alongside the existing ones.
+          store.importScenario(parsed);
+        } else {
+          alert("That file is neither a backup nor a scenario.");
+        }
       } catch {
-        alert("Could not parse that scenario file.");
+        alert("Could not parse that file.");
       }
     };
     reader.readAsText(file);
   };
+
+  const db =
+    dbStatus === "online"
+      ? { color: "#3fb950", text: "● SQL Server", title: "Data is being saved to your local SQL Server database" }
+      : dbStatus === "offline"
+        ? { color: "#f85149", text: "○ DB offline", title: "Database unreachable — changes stay in this browser until it is back" }
+        : { color: "#8b949e", text: "… connecting", title: "Connecting to the forecast database" };
 
   return (
     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
@@ -51,9 +96,16 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
         Delete
       </button>
       <button onClick={() => store.resetActiveToDefault()}>Reset to base case</button>
+      <span style={{ fontSize: 12, color: db.color, whiteSpace: "nowrap" }} title={db.title}>
+        {db.text}
+      </span>
       <span style={{ flex: 1 }} />
-      <button onClick={exportJson}>Export JSON</button>
-      <button onClick={() => fileRef.current?.click()}>Import JSON</button>
+      <button onClick={() => void exportJson()} title="Download every scenario in the database as a JSON backup">
+        Export JSON
+      </button>
+      <button onClick={() => fileRef.current?.click()} title="Restore a JSON backup (or add a single exported scenario)">
+        Import JSON
+      </button>
       <button className="primary" onClick={() => void exportToExcel(scenario, result)}>
         Export to Excel
       </button>
@@ -62,7 +114,10 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
         type="file"
         accept="application/json"
         style={{ display: "none" }}
-        onChange={(e) => e.target.files?.[0] && importJson(e.target.files[0])}
+        onChange={(e) => {
+          if (e.target.files?.[0]) importJson(e.target.files[0]);
+          e.target.value = "";
+        }}
       />
     </div>
   );

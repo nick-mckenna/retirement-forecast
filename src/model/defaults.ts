@@ -2,7 +2,8 @@ import type { Scenario } from "./types";
 
 /**
  * Default scenario — illustrative sample data only.
- * Replace these figures with your own; scenarios stay in your browser's localStorage.
+ * Replace these figures with your own; scenarios are saved to your local
+ * SQL Server database (with a browser-storage fallback while it is offline).
  */
 export function defaultScenario(): Scenario {
   return {

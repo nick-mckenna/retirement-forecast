@@ -41,7 +41,7 @@ export function App() {
       <aside className="sidebar">
         <h1 style={{ fontSize: 18 }}>Retirement Forecast</h1>
         <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
-          Local-first · your data stays in this browser
+          Local-first · your data stays on this machine (SQL Server)
         </p>
         <InputsPanel />
       </aside>

@@ -5,11 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev          # Vite dev server at http://localhost:5173
-npm run build        # tsc -b then vite build -> dist/
+npm run dev          # API server (127.0.0.1:5174) + Vite dev server (localhost:5173) via concurrently
+npm run server       # persistence API server only (tsx server/index.ts)
+npm run build        # tsc -b, tsc -p server/tsconfig.json, then vite build -> dist/
 npm test             # vitest run (all tests once)
 npm run test:watch   # vitest watch mode
-npx tsc --noEmit     # typecheck only (strict mode; noUnusedLocals/Parameters on)
+npx tsc --noEmit     # typecheck the app (strict mode; noUnusedLocals/Parameters on)
+npx tsc -p server/tsconfig.json   # typecheck the server
 
 # Run a single test file or test by name:
 npx vitest run src/__tests__/incomeTax.test.ts
@@ -20,11 +22,13 @@ There is no linter configured; `tsc --noEmit` is the type gate. Tests live in `s
 
 ## What this is
 
-A **local-first, client-only** SPA (React + TS + Vite, no backend) that models a UK couple's
-retirement drawdown. It reproduces the original `NewForecast.xlsx` (kept in the repo root and used
-as the golden reference for tests), fills in a full UK tax calculation, and proposes a tax-aware
-buy/sell strategy. All state is a plain-data `Scenario` object persisted to `localStorage`; there is
-no network I/O. `NewForecast.xlsx` is a data reference only — never a build input.
+A **local-first** SPA (React + TS + Vite) plus a small local persistence API that models a UK
+couple's retirement drawdown. It reproduces the original `NewForecast.xlsx` (kept in the repo root
+and used as the golden reference for tests), fills in a full UK tax calculation, and proposes a
+tax-aware buy/sell strategy. All state is a plain-data `Scenario` object persisted to a local SQL
+Server database (see "Persistence" below); the browser's `localStorage` is only a cache/offline
+fallback. The only network I/O is the app ↔ local API on 127.0.0.1. `NewForecast.xlsx` is a data
+reference only — never a build input.
 
 ## Architecture — the data flow
 
@@ -63,6 +67,38 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   allowance); `cgt.ts` (gilts are intentionally CGT-exempt and must never be passed to it);
   `statePension.ts`; `taxParams.ts` holds editable per-year thresholds (2025/26 baseline, frozen to
   2028 then uprated with inflation via `projectTaxParams`/`resolveTaxParams`).
+
+## Persistence (SQL Server + local API)
+
+- **The database is the source of truth.** `server/` is an Express API (`npm run server`, port
+  5174; Vite proxies `/api` there) that owns a local SQL Server database `RetirementForecast`.
+  `server/db.ts` bootstraps the database and tables idempotently on first use. Credentials come
+  from `containerSecrets/sql-creds.json` (gitignored); they are read only by the server process,
+  never the frontend.
+- **Connection is shared-memory, not TCP.** The local SQL Server instance has TCP/IP disabled, so
+  the server uses `mssql/msnodesqlv8` (ODBC Driver 18) with an explicit `connectionString` —
+  the pure-JS tedious driver cannot connect. Windows-only by construction. Note the @types/mssql
+  typings put `connectionString` under `options`, but the runtime reads it top-level (see
+  `poolConfig` in `server/db.ts`).
+- **Normalized schema, one row-mapping module.** Tables: `Scenario` (scalars incl. rates/income/
+  strategy/finalIncome date + `sortOrder` for list order), `ScenarioPerson` (person + balances +
+  final income per person), `ScenarioTaxYearParams`, `ScenarioOverride`, `ScenarioPurchase`
+  (child tables, `ON DELETE CASCADE`), `AppState` (singleton active-scenario pointer).
+  `server/mapping.ts` is the **pure** row↔Scenario mapping; every user-editable field must appear
+  there once in each direction, guarded by `src/__tests__/sqlMapping.test.ts` (round-trip + key
+  coverage). When adding a Scenario field: extend the schema DDL, `mapping.ts`, and that test.
+- **Store behaviour** (`src/store/scenarioStore.ts`): loads from `GET /api/state` on startup;
+  mutations write through to the API (debounced 400ms per scenario for keystroke edits, immediate
+  for add/delete/duplicate/active, flushed with `keepalive` on `pagehide`). localStorage is a
+  cache/offline fallback — if the API is down the UI shows a "DB offline" chip and keeps working
+  locally. On startup with an **empty** database, localStorage scenarios are migrated up (this is
+  the upgrade path for pre-SQL installs — don't leave test data in the DB, it would shadow a
+  user's browser data).
+- **JSON import/export = database backup/restore.** `GET /api/export` returns a versioned
+  envelope (`format: "retirement-forecast-backup"`, `scenarios[]`, `activeId`); `POST /api/import`
+  replaces the whole database atomically. The UI's Import button also accepts legacy
+  single-scenario JSON files and adds them as a new scenario. Version-migration for old files
+  lives in `src/model/migrate.ts` (shared by store and server — extend it when adding fields).
 
 ## Conventions and non-obvious constraints
 

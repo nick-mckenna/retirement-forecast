@@ -4,19 +4,38 @@ A local-first web app that models a UK couple's retirement drawdown — reproduc
 spreadsheet forecast from configurable inputs, adding a full UK tax engine, and
 proposing a tax-aware buy/sell strategy to hit income targets while minimising tax.
 
-Default inputs are illustrative sample figures only; enter your own — data stays in your browser.
+Default inputs are illustrative sample figures only; enter your own — data stays on your machine.
 
-**Your financial data never leaves your browser.** Scenarios are saved in `localStorage`
-and can be exported/imported as JSON files. There is no server and no account.
+**Your financial data never leaves your machine.** Scenarios are saved to a local
+SQL Server database (`RetirementForecast`) through a small local API server, with the
+browser's `localStorage` as an offline fallback, and can be exported/imported as JSON
+backup files. There is no cloud, no account, no external network I/O.
 
 ## Running
 
+Requires a local SQL Server instance (default instance on `localhost`). Credentials are
+read at runtime from `containerSecrets/sql-creds.json` (gitignored, never bundled into
+the frontend):
+
+```json
+{ "username": "...", "password": "..." }
+```
+
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm run build      # production build to dist/
+npm run dev        # API on http://127.0.0.1:5174 + app on http://localhost:5173
+npm run server     # API server only
+npm run build      # typecheck (app + server) and production build to dist/
 npm test           # unit + golden + excel round-trip tests
 ```
+
+The API server creates the `RetirementForecast` database and its tables automatically on
+first run. On the first app load with an empty database, any scenarios already in the
+browser's `localStorage` are migrated into SQL Server. If the database is unreachable the
+app keeps working from browser storage and shows a "DB offline" badge; **Export JSON**
+downloads a backup of the whole database, and importing a backup file restores it
+(replacing what's there, after a confirmation). Importing an old single-scenario JSON
+file adds it as a new scenario.
 
 ## What it does
 
@@ -43,10 +62,13 @@ src/model/      types, rates, income targets, default scenario
 src/tax/        tax-year helpers, editable params, income tax, CGT, state pension
 src/engine/     ledger types, simulation state, the monthly simulation engine
 src/strategy/   3-year buffer, tax-efficient drawdown order, gilt ladder
-src/store/      Zustand scenario store (localStorage + JSON import/export)
+src/store/      Zustand scenario store (SQL Server via the API, localStorage fallback)
+src/api/        fetch client for the local persistence API
 src/ui/         React UI: inputs, charts, ledger, tax view, tax-params editor
 src/export/     ExcelJS workbook builder matching the original layout
 src/__tests__/  Vitest tests incl. golden checks against NewForecast.xlsx numbers
+server/         Express + SQL Server persistence API (schema bootstrap, scenario CRUD,
+                JSON backup export/import); connects over shared memory via msnodesqlv8
 ```
 
 ## Disclaimer

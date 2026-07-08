@@ -143,3 +143,9 @@ vite.config.ts.timestamp-*
 .vite/
 
 NewForecast.xlsx
+Balance2.xlsx
+Expenditure2026.xlsx
+containerSecrets/sql-creds.json
+
+# Playwright MCP artifacts
+.playwright-mcp/
