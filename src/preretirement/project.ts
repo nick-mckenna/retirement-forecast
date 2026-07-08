@@ -9,9 +9,13 @@
 // for its kind (from the scenario's Rates via ratesForKinds).
 //
 // Flows use the line's expected `amount`, never `paid`: balance overrides
-// (actual balance at the END of a month) are the single actuals-anchoring
-// mechanism — an override replaces the computed end balance and the following
-// months compound from it.
+// (actual balance at the end of a recorded day, or of the whole month) are
+// the single actuals-anchoring mechanism — an override replaces the computed
+// balance at that point and the following months compound from it. For a
+// mid-month record the rest of that month's growth is pro-rated by calendar
+// days, and contributions due after the recorded day are still added;
+// everything due on or before it (and undated lines, and tagged income —
+// which has no due day) is assumed to be inside the recorded balance.
 
 import type { Rates } from "../model/types";
 import type { ExpenseMonth } from "../model/expenseTypes";
@@ -21,20 +25,28 @@ import type {
   PreRetirementData,
 } from "../model/preRetirementTypes";
 import { annualToMonthly } from "../model/rates";
-import { monthKeysBetween, monthLabel } from "../expenses/calc";
+import { daysInMonth, monthKeysBetween, monthLabel } from "../expenses/calc";
 
 export interface AccountMonthCell {
   /** Balance at the start of the month (= previous month's end). */
   start: number;
-  /** start × monthly rate, applied before the month's flows. */
+  /** start × monthly rate, applied before the month's flows. For a recorded
+   *  month, only the growth applied after the anchor (pro-rated by days). */
   growth: number;
-  /** Σ tagged expense-line amounts this month (money into the account). */
+  /** Σ tagged expense-line amounts this month (money into the account). For a
+   *  recorded month, only the contributions due after the recorded day. */
   contributions: number;
-  /** Σ tagged income-line amounts this month (money out, into the joint account). */
+  /** Σ tagged income-line amounts this month (money out, into the joint
+   *  account). 0 for a recorded month — income lines carry no due day, so
+   *  they are assumed to be inside the recorded balance. */
   withdrawals: number;
-  /** start + growth + contributions − withdrawals, then replaced by an override if present. */
+  /** start + growth + contributions − withdrawals; for a recorded month,
+   *  recorded.value + growth + contributions instead. */
   end: number;
-  overridden: boolean;
+  /** The actual-balance record anchoring this month, or null. `day` is as
+   *  entered (null = end of month). Always: end = (recorded?.value ?? start)
+   *  + growth + contributions − withdrawals. */
+  recorded: { day: number | null; value: number } | null;
 }
 
 export interface ProjectionMonth {
@@ -75,6 +87,9 @@ export function ratesForKinds(rates: Rates): KindRates {
 export interface MonthFlows {
   contributions: number;
   withdrawals: number;
+  /** Each tagged expense line's due day (null = undated) and amount, so a
+   *  mid-month balance record can tell which contributions it already contains. */
+  contributionsByDay: { day: number | null; amount: number }[];
 }
 
 /** Net tagged flows per month per account id, from the lines' expected `amount`.
@@ -86,20 +101,34 @@ export function monthlyFlows(
   const known = new Set(accounts.map((a) => a.id));
   const flows = new Map<string, Map<string, MonthFlows>>();
   const unknown = new Set<string>();
-  const add = (monthKey: string, accountId: string, field: keyof MonthFlows, amount: number) => {
+  const get = (monthKey: string, accountId: string): MonthFlows | null => {
     if (!known.has(accountId)) {
       unknown.add(accountId);
-      return;
+      return null;
     }
     const byAccount = flows.get(monthKey) ?? new Map<string, MonthFlows>();
-    const f = byAccount.get(accountId) ?? { contributions: 0, withdrawals: 0 };
-    f[field] += amount;
-    byAccount.set(accountId, f);
+    let f = byAccount.get(accountId);
+    if (!f) {
+      f = { contributions: 0, withdrawals: 0, contributionsByDay: [] };
+      byAccount.set(accountId, f);
+    }
     flows.set(monthKey, byAccount);
+    return f;
   };
   for (const m of months) {
-    for (const e of m.expenses) if (e.accountId != null) add(m.key, e.accountId, "contributions", e.amount);
-    for (const inc of m.income) if (inc.accountId != null) add(m.key, inc.accountId, "withdrawals", inc.amount);
+    for (const e of m.expenses) {
+      if (e.accountId == null) continue;
+      const f = get(m.key, e.accountId);
+      if (f) {
+        f.contributions += e.amount;
+        f.contributionsByDay.push({ day: e.day, amount: e.amount });
+      }
+    }
+    for (const inc of m.income) {
+      if (inc.accountId == null) continue;
+      const f = get(m.key, inc.accountId);
+      if (f) f.withdrawals += inc.amount;
+    }
   }
   return { flows, unknownAccountIds: [...unknown].sort() };
 }
@@ -152,7 +181,11 @@ export function projectAccounts(
   }
 
   const byId = new Map(accounts.map((a) => [a.id, a]));
-  const overrideMap = new Map<string, number>();
+  // Latest record per account per month anchors the projection (a null day
+  // means end of month, so it sorts after every dated record); earlier
+  // same-month records are history and irrelevant to the month's end balance.
+  const overrideMap = new Map<string, { day: number | null; value: number }>();
+  const effectiveDay = (day: number | null | undefined) => day ?? 32;
   for (const o of data.overrides) {
     const acc = byId.get(o.accountId);
     if (!acc) {
@@ -165,7 +198,11 @@ export function projectAccounts(
       );
       continue;
     }
-    overrideMap.set(`${o.accountId}:${o.monthKey}`, o.value);
+    const k = `${o.accountId}:${o.monthKey}`;
+    const prev = overrideMap.get(k);
+    if (!prev || effectiveDay(o.day) >= effectiveDay(prev.day)) {
+      overrideMap.set(k, { day: o.day ?? null, value: o.value });
+    }
   }
 
   const trackedKeys = new Set(expenseMonths.map((m) => m.key));
@@ -196,30 +233,60 @@ export function projectAccounts(
     let total = 0;
     for (const a of accounts) {
       const start = balances.get(a.id)!;
-      const growth = start * annualToMonthly(rates[a.kind]);
+      const monthlyRate = annualToMonthly(rates[a.kind]);
+      const monthGrowth = start * monthlyRate;
       const f = monthFlows?.get(a.id);
-      const contributions = f?.contributions ?? 0;
-      const withdrawals = f?.withdrawals ?? 0;
-      let end = start + growth + contributions - withdrawals;
-      const override = overrideMap.get(`${a.id}:${key}`);
-      const overridden = override != null;
-      if (override != null) end = override;
+      const monthContributions = f?.contributions ?? 0;
+      const monthWithdrawals = f?.withdrawals ?? 0;
+      const record = overrideMap.get(`${a.id}:${key}`);
+
+      let cell: AccountMonthCell;
+      if (record == null) {
+        cell = {
+          start,
+          growth: monthGrowth,
+          contributions: monthContributions,
+          withdrawals: monthWithdrawals,
+          end: start + monthGrowth + monthContributions - monthWithdrawals,
+          recorded: null,
+        };
+      } else {
+        // The recorded value already contains everything up to the end of its
+        // day: actual growth, every flow due on or before it, undated lines
+        // and tagged income. Left for the rest of the month: growth pro-rated
+        // by calendar days, plus contributions due later.
+        const dim = daysInMonth(key);
+        const day = Math.min(Math.max(record.day ?? dim, 1), dim);
+        const growth = record.value * (Math.pow(1 + monthlyRate, (dim - day) / dim) - 1);
+        const contributions = (f?.contributionsByDay ?? [])
+          .filter((c) => (c.day ?? 1) > day)
+          .reduce((s, c) => s + c.amount, 0);
+        cell = {
+          start,
+          growth,
+          contributions,
+          withdrawals: 0,
+          end: record.value + growth + contributions,
+          recorded: record,
+        };
+      }
 
       if (a.kind === "gia") {
-        // Basis grows with contributions; withdrawals take basis out
-        // proportionally to the value sold. Growth and overrides change
-        // the embedded gain, never the basis.
-        let b = basis.get(a.id)! + contributions;
-        const valueBeforeWithdrawal = start + growth + contributions;
-        if (withdrawals > 0 && valueBeforeWithdrawal > 0) {
-          b -= withdrawals * (b / valueBeforeWithdrawal);
+        // Basis grows with the month's full contributions (they are real
+        // money in whether or not a record absorbs them); withdrawals take
+        // basis out proportionally to the value sold. Growth and recorded
+        // balances change the embedded gain, never the basis.
+        let b = basis.get(a.id)! + monthContributions;
+        const valueBeforeWithdrawal = start + monthGrowth + monthContributions;
+        if (monthWithdrawals > 0 && valueBeforeWithdrawal > 0) {
+          b -= monthWithdrawals * (b / valueBeforeWithdrawal);
         }
         basis.set(a.id, Math.max(0, b));
       }
 
-      byAccount[a.id] = { start, growth, contributions, withdrawals, end, overridden };
-      balances.set(a.id, end);
-      total += end;
+      byAccount[a.id] = cell;
+      balances.set(a.id, cell.end);
+      total += cell.end;
     }
     months.push({ key, byAccount, basis: Object.fromEntries(basis), total });
   }

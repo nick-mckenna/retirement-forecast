@@ -83,7 +83,7 @@ function accountsFromLegacyPots(d: LegacyPreRetirementData): {
   }
   const overrides = (d.overrides ?? []).map((o) => {
     ensure(o.person, o.kind);
-    return { accountId: `${o.person}:${o.kind}`, monthKey: o.monthKey, value: o.value };
+    return { accountId: `${o.person}:${o.kind}`, monthKey: o.monthKey, day: null, value: o.value };
   });
   return { accounts: [...accounts.values()], overrides };
 }
@@ -113,6 +113,6 @@ export function migratePreRetirementData(d: PreRetirementData): PreRetirementDat
       openingBalance: a.openingBalance ?? 0,
       openingGainFraction: a.openingGainFraction ?? null,
     })),
-    overrides: d.overrides ?? [],
+    overrides: (d.overrides ?? []).map((o) => ({ ...o, day: o.day ?? null })),
   };
 }

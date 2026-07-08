@@ -36,6 +36,9 @@ export interface PreRetirementAccountRow {
 export interface PreRetirementOverrideRow {
   accountId: string;
   monthKey: string;
+  /** Day of month the balance was recorded at the end of; null = end of month.
+   *  "day" is an ODBC reserved word, hence dayOfMonth (like the expense tables). */
+  dayOfMonth: number | null;
   value: SqlNum;
 }
 
@@ -71,6 +74,7 @@ export function preRetirementToRows(d: PreRetirementData): PreRetirementRows {
       (o): PreRetirementOverrideRow => ({
         accountId: o.accountId,
         monthKey: o.monthKey,
+        dayOfMonth: o.day,
         value: o.value,
       }),
     ),
@@ -91,11 +95,18 @@ export function rowsToPreRetirement(r: PreRetirementRows): PreRetirementData {
       }),
     );
   const overrides = [...r.overrides]
-    .sort((a, b) => a.accountId.localeCompare(b.accountId) || a.monthKey.localeCompare(b.monthKey))
+    .sort(
+      (a, b) =>
+        a.accountId.localeCompare(b.accountId) ||
+        a.monthKey.localeCompare(b.monthKey) ||
+        // Null day = end of month, so it sorts after every dated record.
+        (a.dayOfMonth ?? 32) - (b.dayOfMonth ?? 32),
+    )
     .map(
       (row): BalanceOverride => ({
         accountId: row.accountId,
         monthKey: row.monthKey,
+        day: numOrNull(row.dayOfMonth),
         value: num(row.value),
       }),
     );

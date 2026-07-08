@@ -96,9 +96,12 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   standing orders); `emptyPreRetirementData()` is what the server reports before anything is
   saved. Expense/income lines are tagged with an account's `id`.
   `PreRetirementData = { openingMonth, accounts, overrides }`: opening balances are as of the
-  START of `openingMonth`; a `BalanceOverride { accountId, monthKey, value }` records the
-  **actual** balance at the END of a month and re-anchors the projection (this — not the expense
-  tracker's Paid column — is how real growth, including losses, is fed in). Deleting an account
+  START of `openingMonth`; a `BalanceOverride { accountId, monthKey, day, value }` records the
+  **actual** balance at the end of `day` in that month (`day` null = end of the month) and
+  re-anchors the projection there — the rest of the month's growth is pro-rated by calendar days
+  and contributions due after the recorded day are still added (this — not the expense tracker's
+  Paid column — is how real growth, including losses, is fed in). A month may hold several
+  records (the DB key is a surrogate id); the latest-day one anchors, earlier ones are history. Deleting an account
   keeps its tags on expense lines (shown as "(deleted account)", excluded from the forecast with
   a warning) — deliberately no FK from the expense tables, so history is never broken.
 - **Engine** `src/preretirement/project.ts` (pure, like `simulate`): `projectAccounts(data,

@@ -2,12 +2,20 @@ import type { PersonId, Scenario } from "../../model/types";
 import type { PreAccountKind } from "../../model/preRetirementTypes";
 import { PRE_ACCOUNT_KINDS, PRE_ACCOUNT_KIND_LABELS } from "../../model/preRetirementTypes";
 import { usePreRetirementStore } from "../../store/preRetirementStore";
-import { isMonthKey } from "../../expenses/calc";
+import type { BalanceOverride } from "../../model/preRetirementTypes";
+import { daysInMonth, isMonthKey, monthKeyOf } from "../../expenses/calc";
 import { pct } from "../format";
 
 function parseAmount(v: string): number {
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** "yyyy-mm-dd" for the date input; a null day (legacy end-of-month record)
+ *  shows as the month's last day, which means the same thing. */
+function overrideDateIso(o: BalanceOverride): string {
+  const dim = daysInMonth(o.monthKey);
+  return `${o.monthKey}-${String(Math.min(o.day ?? dim, dim)).padStart(2, "0")}`;
 }
 
 /** The account registry (real, named accounts), opening balances and
@@ -182,7 +190,13 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
             disabled={data.accounts.length === 0}
             onClick={() =>
               update((d) => {
-                d.overrides.push({ accountId: d.accounts[0].id, monthKey: d.openingMonth, value: 0 });
+                const now = new Date();
+                d.overrides.push({
+                  accountId: d.accounts[0].id,
+                  monthKey: monthKeyOf(now),
+                  day: now.getDate(),
+                  value: 0,
+                });
               })
             }
           >
@@ -190,23 +204,27 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
           </button>
         </div>
         <p className="muted" style={{ fontSize: 13 }}>
-          Record what an account was <b>actually</b> worth at the end of a month (statements,
-          valuations, prize winnings, losses). The forecast re-anchors there and compounds forward.
-          This — not the Paid column in the expense tracker — is how real growth is fed in.
+          Record what an account was <b>actually</b> worth at the end of any day (statements,
+          valuations, prize winnings, losses). The forecast re-anchors there: the rest of that
+          month's growth is pro-rated by calendar days, and contributions due later in the month
+          are still added — payments due on or before the recorded day, undated lines and tagged
+          income are assumed to be inside the recorded balance. Recording again later in the month
+          simply supersedes the earlier entry. This — not the Paid column in the expense tracker —
+          is how real growth is fed in.
         </p>
         {data.overrides.length > 0 && (
           <table className="fit zebra">
             <thead>
               <tr>
                 <th className="label">Account</th>
-                <th>End of month</th>
+                <th>At the end of</th>
                 <th>Actual balance</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {data.overrides.map((o, i) => (
-                <tr key={`${o.accountId}:${o.monthKey}:${i}`}>
+                <tr key={`${o.accountId}:${o.monthKey}:${o.day ?? "eom"}:${i}`}>
                   <td className="label">
                     <select
                       value={o.accountId}
@@ -224,11 +242,16 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
                   </td>
                   <td>
                     <input
-                      type="month"
-                      value={o.monthKey}
+                      type="date"
+                      value={overrideDateIso(o)}
                       onChange={(ev) => {
                         const v = ev.target.value;
-                        if (isMonthKey(v)) update((d) => (d.overrides[i].monthKey = v));
+                        if (isMonthKey(v.slice(0, 7)) && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+                          update((d) => {
+                            d.overrides[i].monthKey = v.slice(0, 7);
+                            d.overrides[i].day = Number(v.slice(8));
+                          });
+                        }
                       }}
                     />
                   </td>

@@ -103,6 +103,9 @@ function assertPreRetirementData(body: unknown): PreRetirementData {
     if (!ids.has(o.accountId) || !isMonthKey(o.monthKey) || !Number.isFinite(o.value)) {
       throw bad("Bad balance override in pre-retirement data");
     }
+    if (o.day != null && (!Number.isInteger(o.day) || o.day < 1 || o.day > 31)) {
+      throw bad("Bad balance override day in pre-retirement data");
+    }
   }
   return d;
 }

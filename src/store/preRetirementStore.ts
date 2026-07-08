@@ -34,9 +34,9 @@ interface PreRetirementStore {
   data: PreRetirementData;
   dbStatus: DbStatus;
   update: (mut: (d: PreRetirementData) => void) => void;
-  /** Set (or with null, remove) the actual balance recorded for an account at
-   *  the end of a month. */
-  setOverride: (accountId: string, monthKey: string, value: number | null) => void;
+  /** Set (or with a null value, remove) the actual balance recorded for an
+   *  account at the end of `day` in `monthKey` (day null = end of the month). */
+  setOverride: (accountId: string, monthKey: string, day: number | null, value: number | null) => void;
 }
 
 function clone<T>(x: T): T {
@@ -54,11 +54,13 @@ export const usePreRetirementStore = create<PreRetirementStore>((set) => ({
       queueSave();
       return { data };
     }),
-  setOverride: (accountId, monthKey, value) =>
+  setOverride: (accountId, monthKey, day, value) =>
     set((st) => {
       const data = clone(st.data);
-      data.overrides = data.overrides.filter((o) => !(o.accountId === accountId && o.monthKey === monthKey));
-      if (value != null) data.overrides.push({ accountId, monthKey, value });
+      data.overrides = data.overrides.filter(
+        (o) => !(o.accountId === accountId && o.monthKey === monthKey && (o.day ?? null) === day),
+      );
+      if (value != null) data.overrides.push({ accountId, monthKey, day, value });
       saveLocal(data);
       queueSave();
       return { data };

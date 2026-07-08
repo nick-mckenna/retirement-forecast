@@ -126,6 +126,12 @@ export function monthKeysBetween(fromKey: string, toKey: string): string[] {
   return keys;
 }
 
+/** Number of calendar days in a "yyyy-mm" month. */
+export function daysInMonth(key: string): number {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m, 0).getDate();
+}
+
 /** "2026-01" → "January 2026". */
 export function monthLabel(key: string): string {
   const [y, m] = key.split("-").map(Number);

@@ -47,11 +47,24 @@ function fullPreRetirementData(): PreRetirementData {
       },
     ],
     overrides: [
-      { accountId: "nick-vanguard-isa", monthKey: "2026-09", value: 226100.12 },
-      { accountId: "nick-vanguard-isa", monthKey: "2026-08", value: 225000 },
-      { accountId: "tracy-premium-bonds", monthKey: "2027-01", value: 42150 },
+      { accountId: "nick-vanguard-isa", monthKey: "2026-09", day: null, value: 226100.12 },
+      { accountId: "nick-vanguard-isa", monthKey: "2026-08", day: 15, value: 225000 },
+      // Same month recorded twice (mid-month, then month end) — both kept.
+      { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: null, value: 42150 },
+      { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: 10, value: 42090 },
     ],
   };
+}
+
+/** The mapping's deterministic override order: account, month, then day
+ *  (null = end of month, after every dated record). */
+function sortOverrides(overrides: PreRetirementData["overrides"]): void {
+  overrides.sort(
+    (a, b) =>
+      a.accountId.localeCompare(b.accountId) ||
+      a.monthKey.localeCompare(b.monthKey) ||
+      (a.day ?? 32) - (b.day ?? 32),
+  );
 }
 
 /** FLOAT columns can come back as strings depending on driver settings;
@@ -70,7 +83,7 @@ describe("pre-retirement SQL row mapping", () => {
     const d = fullPreRetirementData();
     const back = rowsToPreRetirement(simulateDbReadback(preRetirementToRows(d)));
     const expected = structuredClone(d);
-    expected.overrides.sort((a, b) => a.accountId.localeCompare(b.accountId) || a.monthKey.localeCompare(b.monthKey));
+    sortOverrides(expected.overrides);
     expect(back).toEqual(expected);
   });
 

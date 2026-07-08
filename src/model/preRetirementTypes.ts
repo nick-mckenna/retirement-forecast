@@ -53,13 +53,19 @@ export interface InvestmentAccount {
   openingGainFraction: number | null;
 }
 
-/** Re-anchors one account's projection: the END balance of `monthKey` is
- *  replaced by `value`. This is how actual growth (including losses) is
- *  recorded — expense-line flows deliberately use expected amounts, not
- *  `paid`, so overrides are the single actuals-anchoring mechanism. */
+/** Re-anchors one account's projection: `value` is the account's actual
+ *  balance at the END of `day` in `monthKey` (or at the end of the whole
+ *  month when `day` is null). This is how actual growth (including losses)
+ *  is recorded — expense-line flows deliberately use expected amounts, not
+ *  `paid`, so overrides are the single actuals-anchoring mechanism. When a
+ *  month has several records, the latest-day one anchors the projection;
+ *  earlier ones are kept as history. */
 export interface BalanceOverride {
   accountId: string;
   monthKey: string;
+  /** 1-based day of the month the balance was taken at the end of; null =
+   *  the end of the month. Days past the month's length clamp to its last day. */
+  day: number | null;
   value: number;
 }
 

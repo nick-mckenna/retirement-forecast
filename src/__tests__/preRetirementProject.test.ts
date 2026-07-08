@@ -41,20 +41,21 @@ function data(accounts: InvestmentAccount[], openingMonth = "2026-07"): PreRetir
   return { openingMonth, accounts, overrides: [] };
 }
 
-/** A bare expense month containing only the given tagged lines. */
+/** A bare expense month containing only the given tagged lines
+ *  ([accountId, amount, paid?, dueDay?] — dueDay defaults to undated). */
 function month(
   key: string,
-  lines: { expense?: [string, number, number?][]; income?: [string, number][] } = {},
+  lines: { expense?: [string, number, number?, (number | null)?][]; income?: [string, number][] } = {},
 ): ExpenseMonth {
   return {
     key,
     startBalance: 0,
     currentBalance: null,
-    expenses: (lines.expense ?? []).map(([accountId, amount, paid], i) => ({
+    expenses: (lines.expense ?? []).map(([accountId, amount, paid, day], i) => ({
       id: `${key}:e${i}`,
       templateId: null,
       name: `line ${i}`,
-      day: null,
+      day: day ?? null,
       amount,
       paid: paid ?? 0,
       accountId,
@@ -179,21 +180,90 @@ describe("projectAccounts — flows from tagged lines", () => {
 describe("projectAccounts — balance overrides", () => {
   it("replaces the month-end balance and compounds the following months from it", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
-    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", value: 9000 }];
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: null, value: 9000 }];
     const r = projectAccounts(d, [], RATES, "2026-09");
     expect(r.months[1].byAccount["isa1"].end).toBe(9000);
-    expect(r.months[1].byAccount["isa1"].overridden).toBe(true);
+    expect(r.months[1].byAccount["isa1"].recorded).toEqual({ day: null, value: 9000 });
     const sep = r.months[2].byAccount["isa1"];
     expect(sep.start).toBe(9000);
     expect(sep.end).toBeCloseTo(9000 * (1 + annualToMonthly(0.07)), 10);
-    expect(sep.overridden).toBe(false);
+    expect(sep.recorded).toBeNull();
+  });
+
+  it("re-anchors mid-month and pro-rates the rest of the month's growth by calendar days", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: 10, value: 9000 }];
+    const r = projectAccounts(d, [], RATES, "2026-09");
+    const aug = r.months[1].byAccount["isa1"];
+    const expectedEnd = 9000 * Math.pow(1 + annualToMonthly(0.07), (31 - 10) / 31);
+    expect(aug.recorded).toEqual({ day: 10, value: 9000 });
+    expect(aug.growth).toBeCloseTo(expectedEnd - 9000, 10);
+    expect(aug.end).toBeCloseTo(expectedEnd, 10);
+    expect(r.months[2].byAccount["isa1"].start).toBeCloseTo(expectedEnd, 10);
+  });
+
+  it("still adds contributions due after the recorded day; earlier and undated ones are inside the balance", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 1000 })]);
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-07", day: 10, value: 2000 }];
+    const m = month("2026-07", {
+      expense: [
+        ["isa1", 500, 0, 5], // due before the record — absorbed
+        ["isa1", 300, 0, 25], // due after — still to come
+        ["isa1", 200], // undated — assumed absorbed
+      ],
+    });
+    const r = projectAccounts(d, [m], RATES, "2026-07");
+    const cell = r.months[0].byAccount["isa1"];
+    expect(cell.contributions).toBe(300);
+    expect(cell.end).toBeCloseTo(2000 * Math.pow(1 + annualToMonthly(0.07), (31 - 10) / 31) + 300, 10);
+  });
+
+  it("assumes tagged income (no due day) is already inside a mid-month recorded balance", () => {
+    const d = data([account({ id: "pb1", kind: "premiumBonds", openingBalance: 10000 })]);
+    d.overrides = [{ accountId: "pb1", monthKey: "2026-07", day: 10, value: 5000 }];
+    const r = projectAccounts(d, [month("2026-07", { income: [["pb1", 3000]] })], RATES, "2026-07");
+    const cell = r.months[0].byAccount["pb1"];
+    expect(cell.withdrawals).toBe(0);
+    expect(cell.end).toBeCloseTo(5000 * Math.pow(1 + annualToMonthly(0.045), (31 - 10) / 31), 10);
+  });
+
+  it("treats a day at or past the month's last day as end of month (≡ day null)", () => {
+    const d = data([
+      account({ id: "a31", kind: "isa", openingBalance: 1000 }),
+      account({ id: "aNull", kind: "isa", openingBalance: 1000 }),
+    ]);
+    d.overrides = [
+      { accountId: "a31", monthKey: "2026-09", day: 31, value: 900 }, // September has 30 days
+      { accountId: "aNull", monthKey: "2026-09", day: null, value: 900 },
+    ];
+    const r = projectAccounts(d, [], RATES, "2026-09");
+    const sep = r.months[2];
+    expect(sep.byAccount["a31"].end).toBe(900);
+    expect(sep.byAccount["a31"].growth).toBe(0);
+    expect(sep.byAccount["a31"].end).toBe(sep.byAccount["aNull"].end);
+  });
+
+  it("anchors on the latest record when a month has several (null day = end of month wins)", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
+    d.overrides = [
+      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 9500 },
+      { accountId: "isa1", monthKey: "2026-08", day: 10, value: 9000 },
+    ];
+    const r = projectAccounts(d, [], RATES, "2026-08");
+    const aug = r.months[1].byAccount["isa1"];
+    expect(aug.recorded).toEqual({ day: 20, value: 9500 });
+    expect(aug.end).toBeCloseTo(9500 * Math.pow(1 + annualToMonthly(0.07), (31 - 20) / 31), 10);
+
+    d.overrides.push({ accountId: "isa1", monthKey: "2026-08", day: null, value: 9800 });
+    const r2 = projectAccounts(d, [], RATES, "2026-08");
+    expect(r2.months[1].byAccount["isa1"].end).toBe(9800);
   });
 
   it("ignores overrides before the opening month or for unknown accounts, with warnings", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 1000 })]);
     d.overrides = [
-      { accountId: "isa1", monthKey: "2026-01", value: 5 },
-      { accountId: "ghost", monthKey: "2026-07", value: 5 },
+      { accountId: "isa1", monthKey: "2026-01", day: null, value: 5 },
+      { accountId: "ghost", monthKey: "2026-07", day: null, value: 5 },
     ];
     const r = projectAccounts(d, [], RATES, "2026-07");
     expect(r.months[0].byAccount["isa1"].end).not.toBe(5);
@@ -311,11 +381,16 @@ describe("handoff to the retirement forecast", () => {
 
 describe("pre-retirement data migration", () => {
   it("backfills structures missing from newer-shape saves", () => {
-    const sparse = { openingMonth: "2026-07", accounts: [{ id: "a", name: "A", owner: "nick", kind: "isa" }] } as unknown as PreRetirementData;
+    const sparse = {
+      openingMonth: "2026-07",
+      accounts: [{ id: "a", name: "A", owner: "nick", kind: "isa" }],
+      overrides: [{ accountId: "a", monthKey: "2026-08", value: 42 }], // pre-day save
+    } as unknown as PreRetirementData;
     const d = migratePreRetirementData(sparse);
     expect(d.accounts[0].openingBalance).toBe(0);
     expect(d.accounts[0].openingGainFraction).toBeNull();
-    expect(d.overrides).toEqual([]);
+    expect(d.overrides).toEqual([{ accountId: "a", monthKey: "2026-08", day: null, value: 42 }]);
+    expect(migratePreRetirementData({ ...sparse, overrides: undefined } as unknown as PreRetirementData).overrides).toEqual([]);
   });
 
   it("upgrades legacy fixed-pot saves into registry accounts (ids keep old tag form)", () => {
@@ -333,7 +408,7 @@ describe("pre-retirement data migration", () => {
     expect(ids).toEqual(["nick:gia", "nick:isa", "tracy:premiumBonds", "tracy:savings"]);
     expect(d.accounts.find((a) => a.id === "nick:gia")!.openingGainFraction).toBe(0.25);
     expect(d.accounts.find((a) => a.id === "tracy:savings")!.name).toBe("Tracy Savings");
-    expect(d.overrides).toEqual([{ accountId: "tracy:premiumBonds", monthKey: "2026-08", value: 42 }]);
+    expect(d.overrides).toEqual([{ accountId: "tracy:premiumBonds", monthKey: "2026-08", day: null, value: 42 }]);
   });
 
   it("upgrades an untouched legacy save (all-zero pots) to the default registry", () => {

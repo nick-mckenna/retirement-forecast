@@ -203,14 +203,19 @@ const SCHEMA: string[] = [
      CONSTRAINT CK_PreRetirementAccount_kind
        CHECK (kind IN (N'isa', N'pension', N'gia', N'savings', N'premiumBonds', N'gilts'))
    )`,
+  // Several records per account per month are allowed (a balance can be
+  // taken at the end of any day; re-recording later in the month keeps the
+  // earlier entry as history), hence the surrogate key. dayOfMonth NULL means
+  // end of the month ("day" itself is an ODBC reserved word, like "owner").
   `IF OBJECT_ID(N'dbo.PreRetirementAccountOverride', N'U') IS NULL
    CREATE TABLE dbo.PreRetirementAccountOverride (
+     id INT IDENTITY NOT NULL CONSTRAINT PK_PreRetirementAccountOverride PRIMARY KEY,
      accountId NVARCHAR(64) NOT NULL
        CONSTRAINT FK_PreRetirementAccountOverride_Account
        REFERENCES dbo.PreRetirementAccount(accountId) ON DELETE CASCADE,
      monthKey NVARCHAR(7) NOT NULL,
-     value FLOAT NOT NULL,
-     CONSTRAINT PK_PreRetirementAccountOverride PRIMARY KEY (accountId, monthKey)
+     dayOfMonth INT NULL,
+     value FLOAT NOT NULL
    )`,
   // The short-lived fixed-pots schema this registry replaced (shipped empty,
   // superseded the same week — safe to drop).
@@ -225,6 +230,24 @@ const SCHEMA: string[] = [
    ALTER TABLE dbo.ExpenseTemplate ADD accountId NVARCHAR(64) NULL`,
   `IF COL_LENGTH(N'dbo.ExpenseMonthItem', N'accountId') IS NULL
    ALTER TABLE dbo.ExpenseMonthItem ADD accountId NVARCHAR(64) NULL`,
+  `IF COL_LENGTH(N'dbo.PreRetirementAccountOverride', N'dayOfMonth') IS NULL
+   ALTER TABLE dbo.PreRetirementAccountOverride ADD dayOfMonth INT NULL`,
+  `IF COL_LENGTH(N'dbo.PreRetirementAccountOverride', N'id') IS NULL
+   ALTER TABLE dbo.PreRetirementAccountOverride ADD id INT IDENTITY NOT NULL`,
+  // Move the override PK off (accountId, monthKey) onto the surrogate id so a
+  // month can hold several records (balances taken on different days).
+  `IF EXISTS (
+     SELECT 1
+     FROM sys.key_constraints kc
+     JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
+     JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+     WHERE kc.name = N'PK_PreRetirementAccountOverride' AND c.name = N'accountId'
+   )
+   BEGIN
+     ALTER TABLE dbo.PreRetirementAccountOverride DROP CONSTRAINT PK_PreRetirementAccountOverride;
+     ALTER TABLE dbo.PreRetirementAccountOverride
+       ADD CONSTRAINT PK_PreRetirementAccountOverride PRIMARY KEY (id);
+   END`,
 ];
 
 let poolPromise: Promise<sql.ConnectionPool> | null = null;

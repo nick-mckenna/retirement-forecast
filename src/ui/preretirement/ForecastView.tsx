@@ -18,13 +18,20 @@ const axisStyle = { fontSize: 11, fill: "#93a4b3" };
 const gbpTick = (v: number) => `£${Math.round(v / 1000)}k`;
 
 function cellTitle(c: AccountMonthCell): string {
-  const parts = [
-    `Start ${money(c.start, 2) === "—" ? "£0" : money(c.start, 2)}`,
-    `Growth ${money(c.growth, 2) === "—" ? "£0" : money(c.growth, 2)}`,
-  ];
-  if (c.contributions !== 0) parts.push(`In ${money(c.contributions, 2)}`);
-  if (c.withdrawals !== 0) parts.push(`Out ${money(c.withdrawals, 2)}`);
-  parts.push(c.overridden ? `End ${money(c.end, 2)} (actual, recorded)` : `End ${money(c.end, 2)}`);
+  const gbp = (v: number) => (money(v, 2) === "—" ? "£0" : money(v, 2));
+  const parts = [`Start ${gbp(c.start)}`];
+  if (c.recorded) {
+    parts.push(
+      `Recorded ${gbp(c.recorded.value)} at ${c.recorded.day == null ? "month end" : `end of day ${c.recorded.day}`}`,
+      `Growth after ${gbp(c.growth)}`,
+    );
+    if (c.contributions !== 0) parts.push(`In after ${money(c.contributions, 2)}`);
+  } else {
+    parts.push(`Growth ${gbp(c.growth)}`);
+    if (c.contributions !== 0) parts.push(`In ${money(c.contributions, 2)}`);
+    if (c.withdrawals !== 0) parts.push(`Out ${money(c.withdrawals, 2)}`);
+  }
+  parts.push(`End ${money(c.end, 2)}`);
   return parts.join("  ·  ");
 }
 
@@ -98,7 +105,7 @@ export function ForecastView({
         <h2>Month by month</h2>
         <p className="muted" style={{ fontSize: 13 }}>
           End-of-month balances. Hover a cell for its growth and tagged flows; cells marked ●
-          are recorded actual balances that re-anchor the forecast.
+          are anchored to a recorded actual balance (the rest of that month is projected from it).
         </p>
         <div style={{ overflowX: "auto" }}>
           <table className="fit zebra">
@@ -146,7 +153,7 @@ export function ForecastView({
                           style={{ whiteSpace: "nowrap", fontWeight: flows ? 600 : undefined }}
                         >
                           {money(c.end)}
-                          {c.overridden ? " ●" : ""}
+                          {c.recorded ? " ●" : ""}
                         </td>
                       );
                     }),
