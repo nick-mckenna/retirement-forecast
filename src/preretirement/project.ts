@@ -20,6 +20,7 @@
 import type { Rates } from "../model/types";
 import type { ExpenseMonth } from "../model/expenseTypes";
 import type {
+  BalanceOverride,
   InvestmentAccount,
   PreAccountKind,
   PreRetirementData,
@@ -294,20 +295,90 @@ export function projectAccounts(
   return { months, warnings, missingMonthKeys, unknownAccountIds };
 }
 
-/** End balances per account id at `monthKey`, clamped to the projection range:
- *  before the first month → the opening (start) balances; after the last →
- *  the final month's end balances. Empty when the projection is empty. */
-export function balancesAt(result: PreRetirementResult, monthKey: string): Record<string, number> {
+/** The account's most recent actual-balance record — the one the Accounts UI
+ *  shows and edits — using the engine's ordering (null day = end of month,
+ *  later entries win ties). Null when the account has none. */
+export function latestOverride(data: PreRetirementData, accountId: string): BalanceOverride | null {
+  let best: BalanceOverride | null = null;
+  let bestKey = "";
+  for (const o of data.overrides) {
+    if (o.accountId !== accountId) continue;
+    const key = `${o.monthKey}:${String(o.day ?? 32).padStart(2, "0")}`;
+    if (!best || key >= bestKey) {
+      best = o;
+      bestKey = key;
+    }
+  }
+  return best;
+}
+
+/** End-of-day balances per account id at an ISO date ("yyyy-mm-dd"), using
+ *  the same intra-month model as recorded balances: growth compounds by the
+ *  calendar-day fraction of the monthly rate, a contribution arrives at the
+ *  end of its due day (undated lines and tagged income at the start of the
+ *  month), and the latest record on or before the date re-anchors the
+ *  balance. At a month's last day this equals that month's cell end exactly.
+ *  Clamped to the projection range: before the first month → the opening
+ *  (start) balances; after the last → the final month's end balances. Empty
+ *  when the projection is empty. */
+export function balancesAtDate(
+  result: PreRetirementResult,
+  data: PreRetirementData,
+  expenseMonths: ExpenseMonth[],
+  rates: KindRates,
+  dateIso: string,
+): Record<string, number> {
   const out: Record<string, number> = {};
   const first = result.months[0];
   const last = result.months[result.months.length - 1];
   if (!first || !last) return out;
+  const monthKey = dateIso.slice(0, 7);
   if (monthKey < first.key) {
     for (const [id, cell] of Object.entries(first.byAccount)) out[id] = cell.start;
     return out;
   }
-  const month = monthKey > last.key ? last : result.months.find((m) => m.key === monthKey);
-  const source = month ?? last;
-  for (const [id, cell] of Object.entries(source.byAccount)) out[id] = cell.end;
+  if (monthKey > last.key) {
+    for (const [id, cell] of Object.entries(last.byAccount)) out[id] = cell.end;
+    return out;
+  }
+  const month = result.months.find((m) => m.key === monthKey);
+  if (!month) return out; // unreachable: every month in the range is emitted
+  const dim = daysInMonth(monthKey);
+  const day = Math.min(Math.max(Number(dateIso.slice(8, 10)) || dim, 1), dim);
+  const clampDay = (d: number | null | undefined) => Math.min(Math.max(d ?? dim, 1), dim);
+  const { flows } = monthlyFlows(
+    expenseMonths.filter((m) => m.key === monthKey),
+    data.accounts,
+  );
+  const monthFlows = flows.get(monthKey);
+  for (const a of data.accounts) {
+    const cell = month.byAccount[a.id];
+    if (!cell || a.id in out) continue; // duplicate ids: first one wins, like the engine
+    // Latest record on or before the date, with the engine's tie-breaking
+    // (null day = end of month, later entries win ties).
+    let anchor: { eff: number; day: number; value: number } | null = null;
+    for (const o of data.overrides) {
+      if (o.accountId !== a.id || o.monthKey !== monthKey) continue;
+      const oDay = clampDay(o.day);
+      if (oDay > day) continue;
+      const eff = o.day ?? 32;
+      if (!anchor || eff >= anchor.eff) anchor = { eff, day: oDay, value: o.value };
+    }
+    const from = anchor?.day ?? 0;
+    const base = anchor?.value ?? cell.start;
+    const monthlyRate = annualToMonthly(rates[a.kind]);
+    const growth = base * (Math.pow(1 + monthlyRate, (day - from) / dim) - 1);
+    const f = monthFlows?.get(a.id);
+    const contributions = (f?.contributionsByDay ?? [])
+      .filter((c) => {
+        const d = c.day ?? 1;
+        return d > from && d <= day;
+      })
+      .reduce((s, c) => s + c.amount, 0);
+    // Income lines carry no due day: they move at the start of the month, so
+    // they are gone by any sampled day and inside any anchor.
+    const withdrawals = anchor ? 0 : (f?.withdrawals ?? 0);
+    out[a.id] = base + growth + contributions - withdrawals;
+  }
   return out;
 }

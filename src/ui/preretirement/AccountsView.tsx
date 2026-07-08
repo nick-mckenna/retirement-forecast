@@ -3,6 +3,7 @@ import type { PreAccountKind } from "../../model/preRetirementTypes";
 import { PRE_ACCOUNT_KINDS, PRE_ACCOUNT_KIND_LABELS } from "../../model/preRetirementTypes";
 import { usePreRetirementStore } from "../../store/preRetirementStore";
 import type { BalanceOverride } from "../../model/preRetirementTypes";
+import { latestOverride } from "../../preretirement/project";
 import { daysInMonth, isMonthKey, monthKeyOf } from "../../expenses/calc";
 import { pct } from "../format";
 
@@ -18,17 +19,48 @@ function overrideDateIso(o: BalanceOverride): string {
   return `${o.monthKey}-${String(Math.min(o.day ?? dim, dim)).padStart(2, "0")}`;
 }
 
-/** The account registry (real, named accounts), opening balances and
- *  actual-balance overrides — the editable inputs of the projection. */
+/** The account registry (real, named accounts), opening balances and each
+ *  account's latest actual balance — the editable inputs of the projection. */
 export function AccountsView({ scenario }: { scenario: Scenario }) {
   const data = usePreRetirementStore((st) => st.data);
   const update = usePreRetirementStore((st) => st.update);
+  const setOverride = usePreRetirementStore((st) => st.setOverride);
 
   const editAccount = (id: string, mut: (a: (typeof data.accounts)[number]) => void) =>
     update((d) => {
       const a = d.accounts.find((x) => x.id === id);
       if (a) mut(a);
     });
+
+  /** Typing a balance means "this is what it is worth as of today": upsert
+   *  today's record, leaving earlier ones in place so past months stay
+   *  anchored to what was recorded at the time. */
+  const recordActual = (accountId: string, value: number) => {
+    const now = new Date();
+    setOverride(accountId, monthKeyOf(now), now.getDate(), value);
+  };
+
+  /** Editing the date moves the shown (latest) record to that day, replacing
+   *  any record already sitting there. */
+  const moveActual = (accountId: string, from: BalanceOverride, dateIso: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso) || !isMonthKey(dateIso.slice(0, 7))) return;
+    const monthKey = dateIso.slice(0, 7);
+    const day = Number(dateIso.slice(8));
+    update((d) => {
+      d.overrides = d.overrides.filter(
+        (o) =>
+          o.accountId !== accountId ||
+          !(
+            (o.monthKey === from.monthKey && (o.day ?? null) === (from.day ?? null)) ||
+            (o.monthKey === monthKey && (o.day ?? null) === day)
+          ),
+      );
+      d.overrides.push({ accountId, monthKey, day, value: from.value });
+    });
+  };
+
+  const clearActual = (accountId: string, from: BalanceOverride) =>
+    setOverride(accountId, from.monthKey, from.day ?? null, null);
 
   const addAccount = () =>
     update((d) => {
@@ -97,6 +129,14 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
           handoff (Savings and Premium Bonds both count as retirement savings; the GIA gain % seeds
           the cost basis for CGT).
         </p>
+        <p className="muted" style={{ fontSize: 13 }}>
+          <b>Latest actual balance</b> records what the account was <b>actually</b> worth
+          (statements, valuations, prize winnings, losses). Typing a value records it as of the end
+          of today and the forecast re-anchors there — earlier records are kept underneath, so past
+          months stay pinned to what you recorded at the time. Change the date if the balance was
+          taken on a different day, or press × to remove the record. This — not the Paid column in
+          the expense tracker — is how real growth is fed in.
+        </p>
         <table className="fit zebra">
           <thead>
             <tr>
@@ -105,178 +145,113 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
               <th>Type</th>
               <th>Opening balance</th>
               <th>GIA gain %</th>
+              <th>Latest actual balance</th>
+              <th>As of end of</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {data.accounts.map((a) => (
-              <tr key={a.id}>
-                <td className="label">
-                  <input
-                    type="text"
-                    style={{ width: 280 }}
-                    value={a.name}
-                    onChange={(ev) => editAccount(a.id, (x) => (x.name = ev.target.value))}
-                  />
-                </td>
-                <td>
-                  <select
-                    value={a.owner}
-                    onChange={(ev) => editAccount(a.id, (x) => (x.owner = ev.target.value as PersonId))}
-                  >
-                    <option value="nick">{scenario.people.nick.name}</option>
-                    <option value="tracy">{scenario.people.tracy.name}</option>
-                  </select>
-                </td>
-                <td>
-                  <select
-                    value={a.kind}
-                    onChange={(ev) =>
-                      editAccount(a.id, (x) => {
-                        x.kind = ev.target.value as PreAccountKind;
-                        x.openingGainFraction = x.kind === "gia" ? (x.openingGainFraction ?? 0) : null;
-                      })
-                    }
-                  >
-                    {PRE_ACCOUNT_KINDS.map((k) => (
-                      <option key={k} value={k}>
-                        {PRE_ACCOUNT_KIND_LABELS[k]}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td>
-                  <input
-                    type="number"
-                    step={1000}
-                    value={a.openingBalance}
-                    onChange={(ev) => editAccount(a.id, (x) => (x.openingBalance = parseAmount(ev.target.value)))}
-                  />
-                </td>
-                <td>
-                  {a.kind === "gia" ? (
-                    <input
-                      type="number"
-                      step={1}
-                      style={{ width: 70 }}
-                      value={Math.round((a.openingGainFraction ?? 0) * 10000) / 100}
-                      onChange={(ev) =>
-                        editAccount(
-                          a.id,
-                          (x) => (x.openingGainFraction = Math.min(1, Math.max(0, parseAmount(ev.target.value) / 100))),
-                        )
-                      }
-                    />
-                  ) : (
-                    <span className="muted">—</span>
-                  )}
-                </td>
-                <td>
-                  <button className="ghost" onClick={() => deleteAccount(a.id)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card" style={{ maxWidth: 820 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2>Actual balances (overrides)</h2>
-          <button
-            className="primary"
-            disabled={data.accounts.length === 0}
-            onClick={() =>
-              update((d) => {
-                const now = new Date();
-                d.overrides.push({
-                  accountId: d.accounts[0].id,
-                  monthKey: monthKeyOf(now),
-                  day: now.getDate(),
-                  value: 0,
-                });
-              })
-            }
-          >
-            + Record actual balance
-          </button>
-        </div>
-        <p className="muted" style={{ fontSize: 13 }}>
-          Record what an account was <b>actually</b> worth at the end of any day (statements,
-          valuations, prize winnings, losses). The forecast re-anchors there: the rest of that
-          month's growth is pro-rated by calendar days, and contributions due later in the month
-          are still added — payments due on or before the recorded day, undated lines and tagged
-          income are assumed to be inside the recorded balance. Recording again later in the month
-          simply supersedes the earlier entry. This — not the Paid column in the expense tracker —
-          is how real growth is fed in.
-        </p>
-        {data.overrides.length > 0 && (
-          <table className="fit zebra">
-            <thead>
-              <tr>
-                <th className="label">Account</th>
-                <th>At the end of</th>
-                <th>Actual balance</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.overrides.map((o, i) => (
-                <tr key={`${o.accountId}:${o.monthKey}:${o.day ?? "eom"}:${i}`}>
+            {data.accounts.map((a) => {
+              const latest = latestOverride(data, a.id);
+              return (
+                <tr key={a.id}>
                   <td className="label">
+                    <input
+                      type="text"
+                      style={{ width: 280 }}
+                      value={a.name}
+                      onChange={(ev) => editAccount(a.id, (x) => (x.name = ev.target.value))}
+                    />
+                  </td>
+                  <td>
                     <select
-                      value={o.accountId}
-                      onChange={(ev) => update((d) => (d.overrides[i].accountId = ev.target.value))}
+                      value={a.owner}
+                      onChange={(ev) => editAccount(a.id, (x) => (x.owner = ev.target.value as PersonId))}
                     >
-                      {data.accounts.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.name}
+                      <option value="nick">{scenario.people.nick.name}</option>
+                      <option value="tracy">{scenario.people.tracy.name}</option>
+                    </select>
+                  </td>
+                  <td>
+                    <select
+                      value={a.kind}
+                      onChange={(ev) =>
+                        editAccount(a.id, (x) => {
+                          x.kind = ev.target.value as PreAccountKind;
+                          x.openingGainFraction = x.kind === "gia" ? (x.openingGainFraction ?? 0) : null;
+                        })
+                      }
+                    >
+                      {PRE_ACCOUNT_KINDS.map((k) => (
+                        <option key={k} value={k}>
+                          {PRE_ACCOUNT_KIND_LABELS[k]}
                         </option>
                       ))}
-                      {!data.accounts.some((a) => a.id === o.accountId) && (
-                        <option value={o.accountId}>(deleted account: {o.accountId})</option>
-                      )}
                     </select>
                   </td>
                   <td>
                     <input
-                      type="date"
-                      value={overrideDateIso(o)}
-                      onChange={(ev) => {
-                        const v = ev.target.value;
-                        if (isMonthKey(v.slice(0, 7)) && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
-                          update((d) => {
-                            d.overrides[i].monthKey = v.slice(0, 7);
-                            d.overrides[i].day = Number(v.slice(8));
-                          });
-                        }
-                      }}
+                      type="number"
+                      step={1000}
+                      value={a.openingBalance}
+                      onChange={(ev) => editAccount(a.id, (x) => (x.openingBalance = parseAmount(ev.target.value)))}
                     />
+                  </td>
+                  <td>
+                    {a.kind === "gia" ? (
+                      <input
+                        type="number"
+                        step={1}
+                        style={{ width: 70 }}
+                        value={Math.round((a.openingGainFraction ?? 0) * 10000) / 100}
+                        onChange={(ev) =>
+                          editAccount(
+                            a.id,
+                            (x) => (x.openingGainFraction = Math.min(1, Math.max(0, parseAmount(ev.target.value) / 100))),
+                          )
+                        }
+                      />
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
                   </td>
                   <td>
                     <input
                       type="number"
                       step={0.01}
-                      value={o.value}
-                      onChange={(ev) => update((d) => (d.overrides[i].value = parseAmount(ev.target.value)))}
+                      value={latest?.value ?? ""}
+                      onChange={(ev) => recordActual(a.id, parseAmount(ev.target.value))}
                     />
                   </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <input
+                      type="date"
+                      value={latest ? overrideDateIso(latest) : ""}
+                      disabled={!latest}
+                      onChange={(ev) => latest && moveActual(a.id, latest, ev.target.value)}
+                    />
+                    {latest && (
+                      <button
+                        className="ghost"
+                        title="Remove this record (an earlier one, if any, takes over)"
+                        onClick={() => clearActual(a.id, latest)}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </td>
                   <td>
-                    <button
-                      className="ghost"
-                      onClick={() => update((d) => (d.overrides = d.overrides.filter((_, j) => j !== i)))}
-                    >
+                    <button className="ghost" onClick={() => deleteAccount(a.id)}>
                       Delete
                     </button>
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              );
+            })}
+          </tbody>
+        </table>
       </div>
+
     </>
   );
 }

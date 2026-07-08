@@ -6,7 +6,8 @@ import { annualToMonthly, grow } from "../model/rates";
 import { defaultScenario } from "../model/defaults";
 import { migratePreRetirementData } from "../model/migrate";
 import {
-  balancesAt,
+  balancesAtDate,
+  latestOverride,
   projectAccounts,
   ratesForKinds,
   type KindRates,
@@ -296,14 +297,98 @@ describe("projectAccounts — GIA cost basis", () => {
   });
 });
 
-describe("balancesAt", () => {
+describe("latestOverride", () => {
+  it("picks the latest-dated record with the engine's ordering (null day = end of month, later entries win ties)", () => {
+    const d = data([account({ id: "isa1" })]);
+    d.overrides = [
+      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 2 },
+      { accountId: "other", monthKey: "2026-12", day: 1, value: 99 },
+      { accountId: "isa1", monthKey: "2026-08", day: null, value: 3 },
+      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 1 },
+    ];
+    expect(latestOverride(d, "isa1")?.value).toBe(3); // end of August beats 20 August
+    d.overrides.push({ accountId: "isa1", monthKey: "2026-08", day: null, value: 4 });
+    expect(latestOverride(d, "isa1")?.value).toBe(4); // later entry wins the tie
+    expect(latestOverride(d, "ghost")).toBeNull();
+  });
+});
+
+describe("balancesAtDate", () => {
+  const monthlyRate = annualToMonthly(0.07);
+
+  it("pro-rates growth to the end of the given day; the month's last day equals the cell end", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
+    const r = projectAccounts(d, [], RATES, "2026-09");
+    const aug = r.months[1].byAccount["isa1"];
+    expect(balancesAtDate(r, d, [], RATES, "2026-08-10")["isa1"]).toBeCloseTo(
+      aug.start * Math.pow(1 + monthlyRate, 10 / 31),
+      10,
+    );
+    expect(balancesAtDate(r, d, [], RATES, "2026-08-31")["isa1"]).toBeCloseTo(aug.end, 10);
+  });
+
+  it("includes only the flows due by the date (undated lines and income at the start of the month)", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 1000 })]);
+    const months = [
+      month("2026-07", {
+        expense: [
+          ["isa1", 500, 0, 5], // due by the 10th — included
+          ["isa1", 300, 0, 25], // due later — not yet
+          ["isa1", 200], // undated — treated as start of month
+        ],
+        income: [["isa1", 100]], // no due day — gone from the start
+      }),
+    ];
+    const r = projectAccounts(d, months, RATES, "2026-07");
+    const growth = 1000 * (Math.pow(1 + monthlyRate, 10 / 31) - 1);
+    expect(balancesAtDate(r, d, months, RATES, "2026-07-10")["isa1"]).toBeCloseTo(
+      1000 + growth + 500 + 200 - 100,
+      10,
+    );
+  });
+
+  it("re-anchors at the latest record on or before the date and ignores later ones", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
+    d.overrides = [
+      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 9000 },
+      { accountId: "isa1", monthKey: "2026-07", day: 20, value: 9500 },
+    ];
+    const r = projectAccounts(d, [], RATES, "2026-07");
+    // Before the first record: projected from the month start.
+    expect(balancesAtDate(r, d, [], RATES, "2026-07-05")["isa1"]).toBeCloseTo(
+      10000 * Math.pow(1 + monthlyRate, 5 / 31),
+      10,
+    );
+    // Between the records: anchored on the day-8 one.
+    expect(balancesAtDate(r, d, [], RATES, "2026-07-15")["isa1"]).toBeCloseTo(
+      9000 * Math.pow(1 + monthlyRate, 7 / 31),
+      10,
+    );
+    // On the later record and at the month end: anchored on it, matching the cell.
+    expect(balancesAtDate(r, d, [], RATES, "2026-07-20")["isa1"]).toBe(9500);
+    expect(balancesAtDate(r, d, [], RATES, "2026-07-31")["isa1"]).toBeCloseTo(
+      r.months[0].byAccount["isa1"].end,
+      10,
+    );
+  });
+
+  it("treats an end-of-month record as landing on the month's last day", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-07", day: null, value: 9000 }];
+    const r = projectAccounts(d, [], RATES, "2026-07");
+    expect(balancesAtDate(r, d, [], RATES, "2026-07-30")["isa1"]).toBeCloseTo(
+      10000 * Math.pow(1 + monthlyRate, 30 / 31), // not anchored yet
+      10,
+    );
+    expect(balancesAtDate(r, d, [], RATES, "2026-07-31")["isa1"]).toBe(9000);
+  });
+
   it("clamps to the projection range", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 1000 })]);
     const r = projectAccounts(d, [], RATES, "2026-09");
-    expect(balancesAt(r, "2026-01")["isa1"]).toBe(1000); // before → opening
-    expect(balancesAt(r, "2026-08")["isa1"]).toBe(r.months[1].byAccount["isa1"].end);
-    expect(balancesAt(r, "2030-01")["isa1"]).toBe(r.months[2].byAccount["isa1"].end); // after → last
-    expect(balancesAt({ ...r, months: [] }, "2026-08")).toEqual({});
+    expect(balancesAtDate(r, d, [], RATES, "2026-01-15")["isa1"]).toBe(1000); // before → opening
+    expect(balancesAtDate(r, d, [], RATES, "2030-01-15")["isa1"]).toBe(r.months[2].byAccount["isa1"].end); // after → last
+    expect(balancesAtDate({ ...r, months: [] }, d, [], RATES, "2026-08-15")).toEqual({});
   });
 });
 

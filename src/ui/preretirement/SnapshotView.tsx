@@ -1,8 +1,9 @@
 import { useState } from "react";
-import type { InvestmentAccount, PreAccountKind } from "../../model/preRetirementTypes";
+import type { ExpenseMonth } from "../../model/expenseTypes";
+import type { InvestmentAccount, PreAccountKind, PreRetirementData } from "../../model/preRetirementTypes";
 import { PERSON_IDS, PRE_ACCOUNT_KINDS, PRE_ACCOUNT_KIND_LABELS } from "../../model/preRetirementTypes";
-import type { PreRetirementResult } from "../../preretirement/project";
-import { balancesAt } from "../../preretirement/project";
+import type { KindRates, PreRetirementResult } from "../../preretirement/project";
+import { balancesAtDate } from "../../preretirement/project";
 import { useStore } from "../../store/scenarioStore";
 import { monthLabel } from "../../expenses/calc";
 import { money, pct } from "../format";
@@ -11,20 +12,30 @@ function toIso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-/** Account values on a chosen date (defaulting to today) with total net worth.
- *  Investments only — the joint current account lives in the expenses module. */
+/** "2026-07-08" → "8 July 2026". */
+function dateLabel(dateIso: string): string {
+  return `${Number(dateIso.slice(8))} ${monthLabel(dateIso.slice(0, 7))}`;
+}
+
+/** Account values at the end of a chosen day (defaulting to today) with total
+ *  net worth. Investments only — the joint current account lives in the
+ *  expenses module. */
 export function SnapshotView({
   result,
-  accounts,
+  data,
+  expenseMonths,
+  rates,
 }: {
   result: PreRetirementResult;
-  accounts: InvestmentAccount[];
+  data: PreRetirementData;
+  expenseMonths: ExpenseMonth[];
+  rates: KindRates;
 }) {
+  const accounts = data.accounts;
   const scenario = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
   const [dateIso, setDateIso] = useState(() => toIso(new Date()));
 
-  const monthKey = dateIso.slice(0, 7);
-  const balances = balancesAt(result, monthKey);
+  const balances = balancesAtDate(result, data, expenseMonths, rates, dateIso);
   const value = (id: string) => balances[id] ?? 0;
   const personAccounts = (p: (typeof PERSON_IDS)[number]) => accounts.filter((a) => a.owner === p);
   const personTotal = (p: (typeof PERSON_IDS)[number]) =>
@@ -49,8 +60,14 @@ export function SnapshotView({
 
   const first = result.months[0];
   const last = result.months[result.months.length - 1];
-  const clamped =
-    first && last ? (monthKey < first.key ? first.key : monthKey > last.key ? last.key : monthKey) : null;
+  const monthKey = dateIso.slice(0, 7);
+  const scopeNote = !first || !last
+    ? "Nothing is modelled yet."
+    : monthKey < first.key
+      ? `${dateLabel(dateIso)} is before the forecast starts — showing the opening balances (start of ${monthLabel(first.key)}).`
+      : monthKey > last.key
+        ? `${dateLabel(dateIso)} is after the forecast ends — showing the ${monthLabel(last.key)} end balances.`
+        : `Projected balances at the end of ${dateLabel(dateIso)}, re-anchored to recorded actual balances up to that day.`;
 
   return (
     <>
@@ -61,9 +78,8 @@ export function SnapshotView({
           <input type="date" value={dateIso} onChange={(e) => e.target.value && setDateIso(e.target.value)} />
         </div>
         <p className="muted" style={{ fontSize: 13 }}>
-          Projected end-of-month balances for {clamped ? monthLabel(clamped) : "—"}
-          {clamped && clamped !== monthKey ? ` (nearest modelled month to ${monthLabel(monthKey)})` : ""}.
-          Investments only — the joint current account is tracked in the Monthly expenses module.
+          {scopeNote} Investments only — the joint current account is tracked in the Monthly
+          expenses module.
         </p>
       </div>
 

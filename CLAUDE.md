@@ -111,7 +111,8 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   come from the active scenario's `Rates` via `ratesForKinds` (isa/pension/gia →
   `investmentGrowth`, savings/premiumBonds → `savingsInterest`, gilts → `giltCoupon`). It tracks
   each person's GIA cost basis for the CGT handoff and reports `missingMonthKeys` /
-  `unknownAccountIds` as warnings. `balancesAt` samples any month (clamped) for the Snapshot tab.
+  `unknownAccountIds` as warnings. `balancesAtDate` samples the end of any day (clamped to the
+  range, re-anchored at recorded balances up to that day) for the Snapshot tab.
 - **Handoff** `src/preretirement/link.ts`: `handoffMonthKey(startDate)` = the month before the
   scenario's start month — the projection ends there and the retirement engine owns everything
   from `startDate`, which is the no-double-counting rule. `Scenario.linkPreRetirement` (toggle in

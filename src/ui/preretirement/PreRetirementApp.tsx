@@ -34,6 +34,7 @@ export function PreRetirementApp() {
   const [tab, setTab] = useState<Tab>("forecast");
 
   const endMonth = handoffMonthKey(scenario.startDate);
+  const kindRates = ratesForKinds(scenario.rates);
   const result = useMemo(
     () => projectAccounts(data, expenseMonths, ratesForKinds(scenario.rates), endMonth),
     [data, expenseMonths, scenario.rates, endMonth],
@@ -95,7 +96,9 @@ export function PreRetirementApp() {
 
       {tab === "forecast" && <ForecastView result={result} accounts={data.accounts} />}
       {tab === "accounts" && <AccountsView scenario={scenario} />}
-      {tab === "snapshot" && <SnapshotView result={result} accounts={data.accounts} />}
+      {tab === "snapshot" && (
+        <SnapshotView result={result} data={data} expenseMonths={expenseMonths} rates={kindRates} />
+      )}
     </main>
   );
 }
