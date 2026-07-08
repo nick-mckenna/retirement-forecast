@@ -15,8 +15,8 @@ export interface ExpenseTemplateItem {
   day: number | null;
   /** Default expected amount for a new month; 0 for items that vary every month (card bills). */
   amount: number;
-  /** Investment account this payment goes INTO (a PreAccountId such as
-   *  "nick:isa"), or null for a normal expense. Tagged lines feed the
+  /** Investment account this payment goes INTO (an InvestmentAccount id such
+   *  as "nick-isa"), or null for a normal expense. Tagged lines feed the
    *  pre-retirement forecast as contributions. */
   accountId: string | null;
 }
@@ -87,8 +87,10 @@ export interface ExpenseData {
   months: ExpenseMonth[];
 }
 
-/** Starting point for a fresh install: the standard items from
- *  Expenditure2026.xlsx (July 2026 sheet). Variable items default to 0. */
+/** Starting point for a fresh install: a generic standard list with
+ *  illustrative round amounts — rename and re-price to match your own.
+ *  Deliberately synthetic: real payees and amounts live only in the local
+ *  database, never in committed code. Variable items default to 0. */
 export function defaultExpenseData(): ExpenseData {
   const e = (id: string, name: string, day: number | null, amount: number): ExpenseTemplateItem => ({
     id,
@@ -101,29 +103,26 @@ export function defaultExpenseData(): ExpenseData {
     templates: {
       expenses: [
         e("exp-savings", "Savings / Investments", 30, 0),
-        e("exp-amex-nick", "BA Amex Nick", 13, 0),
-        e("exp-amex-tracy", "BA Amex Tracy", 6, 0),
-        e("exp-natwest", "Natwest / Sainsburys", 15, 10.99),
-        e("exp-barclaycard", "Barclaycard", 8, 0),
-        e("exp-council-tax", "Council Tax", 1, 307),
-        e("exp-cleaner", "Cleaner", null, 141),
-        e("exp-octopus", "Octopus Energy", 12, 226.62),
-        e("exp-bupa", "Bupa", 9, 140.97),
-        e("exp-ee-nick", "EE (Hotspot & Nick)", 5, 85.16),
-        e("exp-car-valet", "Car Valet", 5, 60),
+        e("exp-card-nick", "Credit Card Nick", 13, 0),
+        e("exp-card-tracy", "Credit Card Tracy", 6, 0),
+        e("exp-card-joint", "Credit Card Joint", 8, 0),
+        e("exp-council-tax", "Council Tax", 1, 200),
+        e("exp-cleaner", "Cleaner", null, 100),
+        e("exp-energy", "Energy", 12, 200),
+        e("exp-health", "Health Insurance", 9, 100),
+        e("exp-mobile-nick", "Mobile Nick", 5, 40),
         e("exp-water", "Water", 1, 60),
-        e("exp-zen", "Zen Internet", 31, 39),
-        e("exp-ee-tracy", "EE Limited (Tracy)", 15, 42.07),
-        e("exp-denplan", "Denplan Nick", 1, 26.1),
-        e("exp-lottery", "Lottery", 19, 22.5),
-        e("exp-aviva", "Aviva", 1, 20.97),
+        e("exp-broadband", "Broadband", 31, 40),
+        e("exp-mobile-tracy", "Mobile Tracy", 15, 40),
+        e("exp-dental", "Dental Plan", 1, 25),
+        e("exp-insurance", "Insurance", 1, 20),
         e("exp-bank-fee", "Bank Fee", 27, 15),
       ],
       income: [
         { id: "inc-savings", name: "Savings", amount: 0, accountId: null },
-        { id: "inc-raworths", name: "Raworths Salary", amount: 2879.24, accountId: null },
-        { id: "inc-mcl-salaries", name: "MCL Salaries", amount: 1567.49, accountId: null },
-        { id: "inc-mcl-divs", name: "MCL Divs", amount: 8750, accountId: null },
+        { id: "inc-salary-nick", name: "Salary Nick", amount: 2000, accountId: null },
+        { id: "inc-salary-tracy", name: "Salary Tracy", amount: 2000, accountId: null },
+        { id: "inc-dividends", name: "Dividends", amount: 0, accountId: null },
         { id: "inc-expenses", name: "Expenses", amount: 0, accountId: null },
       ],
     },

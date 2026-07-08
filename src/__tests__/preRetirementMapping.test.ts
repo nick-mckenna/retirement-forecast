@@ -14,24 +14,24 @@ function fullPreRetirementData(): PreRetirementData {
     openingMonth: "2026-07",
     accounts: [
       {
-        id: "nick-vanguard-isa",
-        name: "Nick Vanguard ISA",
+        id: "nick-isa",
+        name: "Nick ISA",
         owner: "nick",
         kind: "isa",
-        openingBalance: 224517.33,
+        openingBalance: 120000.45,
         openingGainFraction: null,
       },
       {
-        id: "nick-vanguard-gia",
-        name: "Nick Vanguard General Investment",
+        id: "nick-gia",
+        name: "Nick General Investment",
         owner: "nick",
         kind: "gia",
         openingBalance: 90000,
         openingGainFraction: 0.3,
       },
       {
-        id: "tracy-royal-london",
-        name: "Tracy Royal London",
+        id: "tracy-pension",
+        name: "Tracy Pension",
         owner: "tracy",
         kind: "pension",
         openingBalance: 50000.5,
@@ -47,8 +47,8 @@ function fullPreRetirementData(): PreRetirementData {
       },
     ],
     overrides: [
-      { accountId: "nick-vanguard-isa", monthKey: "2026-09", day: null, value: 226100.12 },
-      { accountId: "nick-vanguard-isa", monthKey: "2026-08", day: 15, value: 225000 },
+      { accountId: "nick-isa", monthKey: "2026-09", day: null, value: 120600.12 },
+      { accountId: "nick-isa", monthKey: "2026-08", day: 15, value: 120300 },
       // Same month recorded twice (mid-month, then month end) — both kept.
       { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: null, value: 42150 },
       { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: 10, value: 42090 },
@@ -116,9 +116,9 @@ describe("pre-retirement SQL row mapping", () => {
 
   it("preserves float precision and null gain fractions", () => {
     const back = rowsToPreRetirement(simulateDbReadback(preRetirementToRows(fullPreRetirementData())));
-    expect(back.accounts[0].openingBalance).toBe(224517.33);
+    expect(back.accounts[0].openingBalance).toBe(120000.45);
     expect(back.accounts[0].openingGainFraction).toBeNull();
     expect(back.accounts[1].openingGainFraction).toBe(0.3);
-    expect(back.overrides.find((o) => o.monthKey === "2026-09")!.value).toBe(226100.12);
+    expect(back.overrides.find((o) => o.monthKey === "2026-09")!.value).toBe(120600.12);
   });
 });

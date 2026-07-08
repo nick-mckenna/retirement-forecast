@@ -2,7 +2,7 @@
 // module alongside the retirement forecast and the monthly expense tracker.
 //
 // Accounts are a user-editable registry of the couple's real accounts
-// ("Nick Vanguard ISA", "Tracy Premium Bonds", …). Each account has an owner
+// ("Nick ISA", "Tracy Premium Bonds", …). Each account has an owner
 // and a kind; the kind decides its growth rate (via the scenario's Rates) and
 // which retirement pot it folds into at handoff (savings + premiumBonds merge
 // into the scenario's savings pot, everything else maps 1:1). Expense/income
@@ -38,7 +38,7 @@ export const PRE_ACCOUNT_KIND_LABELS: Record<PreAccountKind, string> = {
 
 export const PERSON_IDS: PersonId[] = ["nick", "tracy"];
 
-/** A real, named account (e.g. "Nick Vanguard ISA"). Global, like the expense
+/** A real, named account (e.g. "Nick ISA"). Global, like the expense
  *  tracker: scenario duplicate/delete must never fork or destroy the registry. */
 export interface InvestmentAccount {
   /** Stable id referenced by expense-line tags and balance overrides. */
@@ -87,8 +87,10 @@ export function emptyPreRetirementData(): PreRetirementData {
   return { openingMonth: currentMonthKey(), accounts: [], overrides: [] };
 }
 
-/** Fresh install: the household's real accounts with zero opening balances
- *  (mirrors defaultExpenseData, which ships the real standing orders). */
+/** Fresh install: a generic sample registry — one account per person × kind,
+ *  zero opening balances. Rename/extend the accounts to match your own.
+ *  Deliberately synthetic: real account details (names, providers, balances)
+ *  live only in the local database, never in committed code. */
 export function defaultPreRetirementData(): PreRetirementData {
   const a = (
     id: string,
@@ -106,22 +108,18 @@ export function defaultPreRetirementData(): PreRetirementData {
   return {
     openingMonth: currentMonthKey(),
     accounts: [
-      a("nick-vanguard-isa", "Nick Vanguard ISA", "nick", "isa"),
-      a("nick-vanguard-pension", "Nick Vanguard Pension", "nick", "pension"),
-      a("nick-mcl-pension", "Nick MCL Pension", "nick", "pension"),
-      a("nick-vanguard-gia", "Nick Vanguard General Investment", "nick", "gia"),
-      a("nick-first-direct-savings", "Nick First Direct Savings", "nick", "savings"),
+      a("nick-isa", "Nick ISA", "nick", "isa"),
+      a("nick-pension", "Nick Pension", "nick", "pension"),
+      a("nick-gia", "Nick General Investment", "nick", "gia"),
+      a("nick-savings", "Nick Savings", "nick", "savings"),
       a("nick-premium-bonds", "Nick Premium Bonds", "nick", "premiumBonds"),
-      a("nick-gilts-ii", "Nick Gilts (Interactive Investor)", "nick", "gilts"),
-      a("tracy-vanguard-isa", "Tracy Vanguard ISA", "tracy", "isa"),
-      a("tracy-vanguard-pension", "Tracy Vanguard Pension", "tracy", "pension"),
-      a("tracy-mcl-pension", "Tracy MCL Pension", "tracy", "pension"),
-      a("tracy-royal-london-raworths", "Tracy Royal London Raworths", "tracy", "pension"),
-      a("tracy-royal-london", "Tracy Royal London", "tracy", "pension"),
-      a("tracy-vanguard-gia", "Tracy Vanguard General Investment", "tracy", "gia"),
+      a("nick-gilts", "Nick Gilts", "nick", "gilts"),
+      a("tracy-isa", "Tracy ISA", "tracy", "isa"),
+      a("tracy-pension", "Tracy Pension", "tracy", "pension"),
+      a("tracy-gia", "Tracy General Investment", "tracy", "gia"),
       a("tracy-savings", "Tracy Savings", "tracy", "savings"),
       a("tracy-premium-bonds", "Tracy Premium Bonds", "tracy", "premiumBonds"),
-      a("tracy-gilts-ii", "Tracy Gilts (Interactive Investor)", "tracy", "gilts"),
+      a("tracy-gilts", "Tracy Gilts", "tracy", "gilts"),
     ],
     overrides: [],
   };

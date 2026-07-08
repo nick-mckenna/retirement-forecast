@@ -139,12 +139,12 @@ describe("projectAccounts — flows from tagged lines", () => {
 
   it("keeps two same-kind accounts separate (e.g. two pensions)", () => {
     const d = data([
-      account({ id: "vanguard-pension", kind: "pension", openingBalance: 1000 }),
-      account({ id: "mcl-pension", kind: "pension", openingBalance: 2000 }),
+      account({ id: "sipp-pension", kind: "pension", openingBalance: 1000 }),
+      account({ id: "workplace-pension", kind: "pension", openingBalance: 2000 }),
     ]);
-    const r = projectAccounts(d, [month("2026-07", { expense: [["mcl-pension", 300]] })], RATES, "2026-07");
-    expect(r.months[0].byAccount["vanguard-pension"].contributions).toBe(0);
-    expect(r.months[0].byAccount["mcl-pension"].contributions).toBe(300);
+    const r = projectAccounts(d, [month("2026-07", { expense: [["workplace-pension", 300]] })], RATES, "2026-07");
+    expect(r.months[0].byAccount["sipp-pension"].contributions).toBe(0);
+    expect(r.months[0].byAccount["workplace-pension"].contributions).toBe(300);
   });
 
   it("ignores tags for unknown/deleted accounts and reports them", () => {
@@ -507,18 +507,18 @@ describe("pre-retirement data migration", () => {
       overrides: [],
     } as unknown as PreRetirementData;
     const d = migratePreRetirementData(legacy);
-    expect(d.accounts).toHaveLength(16);
+    expect(d.accounts).toHaveLength(12);
     expect(d.openingMonth).toBe("2026-07");
   });
 
-  it("default data is the real 16-account registry with zero balances", () => {
+  it("default data is a generic sample registry (person × kind) with zero balances", () => {
     const d = defaultPreRetirementData();
-    expect(d.accounts).toHaveLength(16);
+    expect(d.accounts).toHaveLength(12);
     expect(d.accounts.every((a) => a.openingBalance === 0)).toBe(true);
-    expect(new Set(d.accounts.map((a) => a.id)).size).toBe(16); // ids unique
-    expect(d.accounts.filter((a) => a.owner === "tracy" && a.kind === "pension")).toHaveLength(4);
-    expect(d.accounts.some((a) => a.name === "Nick Vanguard ISA")).toBe(true);
-    expect(d.accounts.some((a) => a.name === "Tracy Royal London")).toBe(true);
+    expect(new Set(d.accounts.map((a) => a.id)).size).toBe(12); // ids unique
+    expect(d.accounts.filter((a) => a.owner === "tracy" && a.kind === "pension")).toHaveLength(1);
+    expect(d.accounts.some((a) => a.name === "Nick ISA")).toBe(true);
+    expect(d.accounts.some((a) => a.name === "Tracy Pension")).toBe(true);
     expect(d.overrides).toEqual([]);
     expect(d.openingMonth).toMatch(/^\d{4}-\d{2}$/);
   });

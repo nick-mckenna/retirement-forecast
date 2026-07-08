@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm run dev          # API server (127.0.0.1:5174) + Vite dev server (localhost:5173) via concurrently
 npm run server       # persistence API server only (tsx server/index.ts)
 npm run build        # tsc -b, tsc -p server/tsconfig.json, then vite build -> dist/
+npm run preview      # API server + vite preview (serves the dist/ build)
 npm test             # vitest run (all tests once)
 npm run test:watch   # vitest watch mode
 npx tsc --noEmit     # typecheck the app (strict mode; noUnusedLocals/Parameters on)
@@ -27,20 +28,23 @@ household-finance suite. `src/ui/App.tsx` is a thin shell with a top-level **mod
 over three modules:
 
 1. **Retirement forecast** (`src/ui/RetirementApp.tsx` and most of `src/`) — models a UK couple's
-   retirement drawdown. It reproduces the original `NewForecast.xlsx` (kept in the repo root and
-   used as the golden reference for tests), fills in a full UK tax calculation, and proposes a
-   tax-aware buy/sell strategy. All state is a plain-data `Scenario` object.
+   retirement drawdown. It reproduces the mechanics of an original `NewForecast.xlsx` spreadsheet,
+   fills in a full UK tax calculation, and proposes a tax-aware buy/sell strategy. All state is a
+   plain-data `Scenario` object.
 2. **Pre-retirement forecast** (`src/ui/preretirement/`, see "Pre-retirement forecast" below) —
    the accumulation phase: projects the couple's real investment accounts month by month from
    today to the retirement start date, fed by contribution lines tagged in the expense tracker,
    and hands its ending balances to a linked retirement scenario.
 3. **Monthly expenses** (`src/ui/expenses/`, see "Monthly expense tracker" below) — reproduces
-   `Expenditure2026.xlsx` (also in the repo root, golden reference for its tests): tracks the joint
-   current account month by month so it never drops below zero.
+   `Expenditure2026.xlsx`, the household's expenditure spreadsheet: tracks the joint current
+   account month by month so it never drops below zero.
 
 Everything is persisted to a local SQL Server database (see "Persistence" below); the browser's
 `localStorage` is only a cache/offline fallback. The only network I/O is the app ↔ local API on
-127.0.0.1. The `.xlsx` files are data references only — never build inputs.
+127.0.0.1. The `.xlsx` files are **gitignored personal data** — they may sit in the working copy
+as references but are never committed, never build/test inputs, and a fresh clone won't have them.
+All committed tests and defaults use synthetic figures only (see "Never commit sensitive data"
+under Conventions).
 
 ## Architecture — the data flow
 
@@ -55,7 +59,8 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
 
 - **`simulate(scenario)` is the heart.** It is a pure, deterministic function: same Scenario in →
   same `SimResult` out. The UI does not call it directly — it calls **`runForecast(scenario)`**
-  (`src/strategy/optimiser.ts`) inside a single `useMemo` in `src/ui/App.tsx`. `runForecast` calls
+  (`src/strategy/optimiser.ts`) inside a single `useMemo` in `src/ui/RetirementApp.tsx`
+  (on the scenario resolved by `resolveScenarioForRun`, see "Handoff" below). `runForecast` calls
   `simulate` once for `heuristic`/`annual` tax modes; for `lifetime` mode it simulates several
   candidate pension-crystallisation strategies and returns the lowest-total-tax one. Keep the engine
   pure and side-effect free.
@@ -88,13 +93,14 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
 
 - **Accounts are a user-editable registry of real accounts**
   (`src/model/preRetirementTypes.ts`): `InvestmentAccount { id, name, owner, kind,
-  openingBalance, openingGainFraction }`, e.g. "Nick Vanguard ISA", "Tracy Royal London".
+  openingBalance, openingGainFraction }`, e.g. "Nick ISA", "Tracy Pension".
   The `kind` (`PreAccountKind`: isa | pension | gia | savings |
   **premiumBonds** | gilts) is the grouping vocabulary shared by all three modules — it picks the
-  growth rate and the retirement pot at handoff. `defaultPreRetirementData()` ships the
-  household's real 16 accounts with zero balances (like `defaultExpenseData` ships the real
-  standing orders); `emptyPreRetirementData()` is what the server reports before anything is
-  saved. Expense/income lines are tagged with an account's `id`.
+  growth rate and the retirement pot at handoff. `defaultPreRetirementData()` ships a generic
+  sample registry (one account per person × kind, zero balances; `defaultExpenseData` likewise
+  ships a generic standing-order list) — the user renames/extends it to match their real
+  accounts, which live only in the local DB. `emptyPreRetirementData()` is what the server
+  reports before anything is saved. Expense/income lines are tagged with an account's `id`.
   `PreRetirementData = { openingMonth, accounts, overrides }`: opening balances are as of the
   START of `openingMonth`; a `BalanceOverride { accountId, monthKey, day, value }` records the
   **actual** balance at the end of `day` in that month (`day` null = end of the month) and
@@ -145,14 +151,15 @@ forecast:
   when the month is created — its lines are then overridden/added/removed freely without touching
   the standard list or other months. Per expense line: `amount` (expected) and `paid` (actual so
   far). Per month: `startBalance` and a nullable `currentBalance` (the balance at the bank "now").
-  Every template and month line also carries a nullable `accountId` tagging it to one of the 12
+  Every template and month line also carries a nullable `accountId` tagging it to one of the
   shared investment accounts (see "Pre-retirement forecast") — expense = contribution into it,
   income = withdrawal from it. `migrateExpenseData` in `src/model/migrate.ts` backfills old saves.
 - **Calc** `src/expenses/calc.ts` (pure): `summariseMonth` reproduces the spreadsheet's numbers —
   totals for Amount/Paid/To Pay, `totalAvailable` (start balance + income, the sheet's income-side
   SUM), `headroom` = expected end balance (the sheet's "Balance To Reach 0") and `predicted`
-  (= currentBalance − still-to-pay). `monthWarnings` flags months heading below zero. Golden tests
-  in `src/__tests__/expenseCalc.test.ts` use January/March 2026 numbers from `Expenditure2026.xlsx`.
+  (= currentBalance − still-to-pay). `monthWarnings` flags months heading below zero. Tests
+  in `src/__tests__/expenseCalc.test.ts` pin these formulas (which mirror the spreadsheet's)
+  with synthetic sample months.
 - **Store** `src/store/expenseStore.ts`: mirrors `scenarioStore` (localStorage cache
   `retirement-forecast:expenses`, debounced 400ms write-through per month + for the template set,
   `pagehide` flush, empty-DB seeding, own `dbStatus`).
@@ -171,8 +178,8 @@ forecast:
   `RETIREMENT_DB_NAME=RetirementForecastTest` (see `vite.config.ts`), so any test that touches
   the database bootstraps and uses the test database, never the production one.
   `server/db.ts` bootstraps the database and tables idempotently on first use. Credentials come
-  from `containerSecrets/sql-creds.json` (gitignored); they are read only by the server process,
-  never the frontend.
+  from `containerSecrets/sql-creds.json` (gitignored; copy `sql-creds.json.example` to create it);
+  they are read only by the server process, never the frontend.
 - **Connection is shared-memory, not TCP.** The local SQL Server instance has TCP/IP disabled, so
   the server uses `mssql/msnodesqlv8` (ODBC Driver 18) with an explicit `connectionString` —
   the pure-JS tedious driver cannot connect. Windows-only by construction. Note the @types/mssql
@@ -213,9 +220,18 @@ forecast:
 - **Overrides**: auto-generated refill withdrawals are aggregated by `${year}:${person}:${source}` and
   can be replaced by a `Scenario.overrides` entry with the same key (see `applyOverrides` in
   `simulate.ts`).
-- **Golden tests** (`src/__tests__/golden.test.ts`) assert the engine's monthly mechanics reproduce
-  specific numbers taken verbatim from `NewForecast.xlsx` (e.g. Nick ISA 224,517 → 225,786.45). If you
-  change growth/income mechanics, expect these to move and update them deliberately, not casually.
+- **Golden tests** (`src/__tests__/golden.test.ts`) pin the engine's monthly growth/draw mechanics
+  to hand-computed illustrative figures (e.g. an ISA at the default rates: 200,000 → 201,130.83 in
+  one month) and smoke-test a full `simulate(defaultScenario())` run (year count, first-year income
+  target, buffer, gilt rungs). If you change growth/income mechanics, expect these to move and
+  update them deliberately, not casually.
+- **Never commit sensitive data.** Real balances, payees, employers, providers, and credentials
+  belong only in the local database and the gitignored files (`*.xlsx`,
+  `containerSecrets/sql-creds.json`) — never in anything committed to git: source, defaults, test
+  fixtures, docs, or commit messages. Everything committed is synthetic: `defaultScenario()` is a
+  "Sample couple" (Person A/B), `defaultExpenseData()`/`defaultPreRetirementData()` ship generic
+  items with illustrative amounts, and all test fixtures use made-up figures. When adding tests or
+  defaults, invent numbers — do not transcribe them from the spreadsheets or the database.
 - The Excel builder is split into a pure `buildWorkbook()` (DOM-free, unit-tested via round-trip) and a
   thin `exportToExcel()` download wrapper — add new sheet logic in `buildWorkbook`.
 
