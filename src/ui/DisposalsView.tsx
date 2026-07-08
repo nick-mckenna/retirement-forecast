@@ -53,10 +53,10 @@ export function DisposalsView({ result, scenario }: { result: SimResult; scenari
                 Tax year
               </th>
               <th colSpan={3} style={{ color: "var(--nick)" }}>
-                Nick sold
+                {scenario.people.nick.name} sold
               </th>
               <th colSpan={3} style={{ color: "var(--tracy)" }}>
-                Tracy sold
+                {scenario.people.tracy.name} sold
               </th>
               <th rowSpan={2}>Bed &amp; ISA</th>
               <th rowSpan={2}>Gilts matured</th>

@@ -3,6 +3,7 @@
 
 import type { Scenario } from "../model/types";
 import type { ExpenseData, ExpenseMonth, ExpenseTemplates } from "../model/expenseTypes";
+import type { PreRetirementData } from "../model/preRetirementTypes";
 
 export const BACKUP_FORMAT = "retirement-forecast-backup";
 
@@ -20,6 +21,8 @@ export interface BackupFile {
   scenarios: Scenario[];
   /** Added later; absent from older backups (which then leave expenses untouched). */
   expenses?: ExpenseData;
+  /** Added later still; absent from older backups (pre-retirement left untouched). */
+  preRetirement?: PreRetirementData;
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -71,4 +74,7 @@ export const api = {
     }),
   deleteExpenseMonth: (key: string) =>
     http<void>(`/expenses/months/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  preRetirement: () => http<PreRetirementData>("/preretirement"),
+  savePreRetirement: (data: PreRetirementData, keepalive = false) =>
+    http<void>("/preretirement", { method: "PUT", body: JSON.stringify({ data }), keepalive }),
 };

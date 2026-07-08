@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Scenario } from "../model/types";
 import { defaultScenario } from "../model/defaults";
+import { migrateScenario } from "../model/migrate";
 import { projectTaxParams } from "../tax/taxParams";
 import { rowsToScenario, scenarioToRows, type ScenarioRows } from "../../server/mapping";
 
@@ -9,6 +10,7 @@ function fullScenario(): Scenario {
   const s = defaultScenario();
   s.id = "sc-full";
   s.name = "Fully populated";
+  s.linkPreRetirement = true;
   s.income.mode = "swr";
   s.strategy.taxMode = "lifetime";
   s.strategy.lifetimeFillFraction = 0.65;
@@ -78,5 +80,20 @@ describe("SQL row mapping", () => {
     expect(back.purchases.map((p) => p.id)).toEqual(["p2", "p1"]);
     expect(back.overrides[0].amount).toBe(12345.67);
     expect(back.strategy.lifetimeFillFraction).toBe(0.65);
+  });
+
+  it("round-trips the pre-retirement link flag (BIT column forms)", () => {
+    const s = fullScenario();
+    const rows = scenarioToRows(s, 0);
+    expect(rowsToScenario({ ...rows, scenario: { ...rows.scenario, linkPreRetirement: 1 } }).linkPreRetirement).toBe(true);
+    expect(rowsToScenario({ ...rows, scenario: { ...rows.scenario, linkPreRetirement: false } }).linkPreRetirement).toBe(false);
+  });
+});
+
+describe("scenario migration", () => {
+  it("backfills linkPreRetirement on pre-link saves", () => {
+    const old = defaultScenario() as Partial<Scenario>;
+    delete old.linkPreRetirement;
+    expect(migrateScenario(old as Scenario).linkPreRetirement).toBe(false);
   });
 });

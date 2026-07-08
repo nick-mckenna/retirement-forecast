@@ -84,6 +84,7 @@ export function createMonthFromTemplates(
         day: t.day,
         amount: t.amount,
         paid: 0,
+        accountId: t.accountId,
       }),
     ),
     income: templates.income.map(
@@ -92,6 +93,7 @@ export function createMonthFromTemplates(
         templateId: t.id,
         name: t.name,
         amount: t.amount,
+        accountId: t.accountId,
       }),
     ),
   };
@@ -117,6 +119,13 @@ export function addMonths(key: string, n: number): string {
   return `${ny}-${String(nm).padStart(2, "0")}`;
 }
 
+/** Every month key from `fromKey` to `toKey` inclusive; [] when from > to. */
+export function monthKeysBetween(fromKey: string, toKey: string): string[] {
+  const keys: string[] = [];
+  for (let k = fromKey; k <= toKey; k = addMonths(k, 1)) keys.push(k);
+  return keys;
+}
+
 /** "2026-01" → "January 2026". */
 export function monthLabel(key: string): string {
   const [y, m] = key.split("-").map(Number);
@@ -138,4 +147,14 @@ export function nextMonthKey(d: ExpenseData, fallback: string): string {
   const months = sortedMonths(d);
   const last = months[months.length - 1];
   return last ? addMonths(last.key, 1) : fallback;
+}
+
+/** The month the UI should show by default: `todayKey` (the current calendar
+ *  month) when tracked, otherwise the nearest tracked month — the latest past
+ *  month, or the first future one when the whole list lies ahead. */
+export function defaultMonthKey(d: ExpenseData, todayKey: string): string | null {
+  const months = sortedMonths(d);
+  if (months.length === 0) return null;
+  const past = months.filter((m) => m.key <= todayKey);
+  return past.length > 0 ? past[past.length - 1].key : months[0].key;
 }

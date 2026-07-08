@@ -15,6 +15,10 @@ export interface ExpenseTemplateItem {
   day: number | null;
   /** Default expected amount for a new month; 0 for items that vary every month (card bills). */
   amount: number;
+  /** Investment account this payment goes INTO (a PreAccountId such as
+   *  "nick:isa"), or null for a normal expense. Tagged lines feed the
+   *  pre-retirement forecast as contributions. */
+  accountId: string | null;
 }
 
 /** A recurring monthly income source as it appears in the standard list. */
@@ -23,6 +27,9 @@ export interface IncomeTemplateItem {
   name: string;
   /** Default expected amount for a new month. */
   amount: number;
+  /** Investment account this money is withdrawn FROM into the joint account
+   *  (a PreAccountId), or null for normal income (salary etc.). */
+  accountId: string | null;
 }
 
 export interface ExpenseTemplates {
@@ -41,6 +48,10 @@ export interface MonthExpenseItem {
   amount: number;
   /** Amount actually paid so far this month. */
   paid: number;
+  /** Investment account this payment goes INTO (contribution), or null.
+   *  The pre-retirement forecast uses `amount` (expected), never `paid` —
+   *  balance overrides are the actuals-anchoring mechanism. */
+  accountId: string | null;
 }
 
 /** One income line in an actual month. */
@@ -49,6 +60,8 @@ export interface MonthIncomeItem {
   templateId: string | null;
   name: string;
   amount: number;
+  /** Investment account this money is withdrawn FROM (into the joint account), or null. */
+  accountId: string | null;
 }
 
 /** An actual calendar month being tracked. Created as a snapshot of the
@@ -82,6 +95,7 @@ export function defaultExpenseData(): ExpenseData {
     name,
     day,
     amount,
+    accountId: null,
   });
   return {
     templates: {
@@ -106,11 +120,11 @@ export function defaultExpenseData(): ExpenseData {
         e("exp-bank-fee", "Bank Fee", 27, 15),
       ],
       income: [
-        { id: "inc-savings", name: "Savings", amount: 0 },
-        { id: "inc-raworths", name: "Raworths Salary", amount: 2879.24 },
-        { id: "inc-mcl-salaries", name: "MCL Salaries", amount: 1567.49 },
-        { id: "inc-mcl-divs", name: "MCL Divs", amount: 8750 },
-        { id: "inc-expenses", name: "Expenses", amount: 0 },
+        { id: "inc-savings", name: "Savings", amount: 0, accountId: null },
+        { id: "inc-raworths", name: "Raworths Salary", amount: 2879.24, accountId: null },
+        { id: "inc-mcl-salaries", name: "MCL Salaries", amount: 1567.49, accountId: null },
+        { id: "inc-mcl-divs", name: "MCL Divs", amount: 8750, accountId: null },
+        { id: "inc-expenses", name: "Expenses", amount: 0, accountId: null },
       ],
     },
     months: [],

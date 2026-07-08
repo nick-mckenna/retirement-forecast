@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import type { SimResult } from "../engine/simulate";
+import type { Scenario } from "../model/types";
 
 const axisStyle = { fontSize: 11, fill: "#93a4b3" };
 const gbpTick = (v: number) => `£${Math.round(v / 1000)}k`;
@@ -28,7 +29,10 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-export function Charts({ result }: { result: SimResult }) {
+export function Charts({ result, scenario }: { result: SimResult; scenario: Scenario }) {
+  const nickName = scenario.people.nick.name;
+  const tracyName = scenario.people.tracy.name;
+
   const nw = result.years.map((y) => ({
     year: y.taxYearStart,
     netWorth: Math.round(y.netWorthEnd),
@@ -38,10 +42,10 @@ export function Charts({ result }: { result: SimResult }) {
 
   const tax = result.years.map((y) => ({
     year: y.taxYearStart,
-    "Nick income tax": Math.round(y.tax.nick.incomeTax),
-    "Nick CGT": Math.round(y.tax.nick.cgt),
-    "Tracy income tax": Math.round(y.tax.tracy.incomeTax),
-    "Tracy CGT": Math.round(y.tax.tracy.cgt),
+    [`${nickName} income tax`]: Math.round(y.tax.nick.incomeTax),
+    [`${nickName} CGT`]: Math.round(y.tax.nick.cgt),
+    [`${tracyName} income tax`]: Math.round(y.tax.tracy.incomeTax),
+    [`${tracyName} CGT`]: Math.round(y.tax.tracy.cgt),
   }));
 
   const comp = result.rows
@@ -101,10 +105,10 @@ export function Charts({ result }: { result: SimResult }) {
           <YAxis tickFormatter={gbpTick} tick={axisStyle} width={54} />
           <Tooltip formatter={(v: number) => `£${v.toLocaleString()}`} contentStyle={{ background: "#17212b", border: "1px solid #2c3e4f" }} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Bar dataKey="Nick income tax" stackId="n" fill="#4da3ff" />
-          <Bar dataKey="Nick CGT" stackId="n" fill="#2c6ca8" />
-          <Bar dataKey="Tracy income tax" stackId="t" fill="#c98bff" />
-          <Bar dataKey="Tracy CGT" stackId="t" fill="#7a4fa8" />
+          <Bar dataKey={`${nickName} income tax`} stackId="n" fill="#4da3ff" />
+          <Bar dataKey={`${nickName} CGT`} stackId="n" fill="#2c6ca8" />
+          <Bar dataKey={`${tracyName} income tax`} stackId="t" fill="#c98bff" />
+          <Bar dataKey={`${tracyName} CGT`} stackId="t" fill="#7a4fa8" />
         </BarChart>
       </Panel>
     </div>

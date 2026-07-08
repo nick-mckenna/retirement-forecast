@@ -10,6 +10,7 @@ export function defaultScenario(): Scenario {
     id: "default",
     name: "Sample couple — base case",
     startDate: "2028-04-05",
+    linkPreRetirement: false,
     people: {
       nick: {
         id: "nick",

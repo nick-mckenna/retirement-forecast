@@ -2,7 +2,15 @@ import { create } from "zustand";
 import type { ExpenseData, ExpenseMonth, ExpenseTemplates } from "../model/expenseTypes";
 import { defaultExpenseData } from "../model/expenseTypes";
 import { migrateExpenseData } from "../model/migrate";
-import { createMonthFromTemplates, monthKeyOf, nextMonthKey, sortedMonths, summariseMonth } from "../expenses/calc";
+import {
+  createMonthFromTemplates,
+  defaultMonthKey,
+  isMonthKey,
+  monthKeyOf,
+  nextMonthKey,
+  sortedMonths,
+  summariseMonth,
+} from "../expenses/calc";
 import { api } from "../api/client";
 import type { DbStatus } from "./scenarioStore";
 
@@ -43,6 +51,10 @@ interface ExpenseStore {
    *  month), snapshotting the standard items. Start balance defaults to the
    *  previous month's expected end balance. */
   addMonth: () => void;
+  /** Add every missing month up to and including `untilKey`, chaining each
+   *  start balance from the previous month's expected end balance. Used by the
+   *  pre-retirement module to cover its whole forecast range. */
+  addMonthsUntil: (untilKey: string) => void;
   deleteMonth: (key: string) => void;
 }
 
@@ -54,7 +66,7 @@ const initial = loadLocal();
 
 export const useExpenseStore = create<ExpenseStore>((set) => ({
   data: initial,
-  selectedKey: latestKey(initial),
+  selectedKey: defaultKey(initial),
   dbStatus: "connecting",
   select: (key) => set({ selectedKey: key }),
   updateTemplates: (mut) =>
@@ -91,20 +103,43 @@ export const useExpenseStore = create<ExpenseStore>((set) => ({
       void track(api.saveExpenseMonth(month));
       return { data, selectedKey: key };
     }),
+  addMonthsUntil: (untilKey) =>
+    set((st) => {
+      if (!isMonthKey(untilKey)) return st;
+      const months = [...st.data.months];
+      const added: ExpenseMonth[] = [];
+      // Bounded for safety; 100 years of months is far beyond any real range.
+      while (added.length < 1200) {
+        const data = { ...st.data, months };
+        const key = nextMonthKey(data, monthKeyOf(new Date()));
+        if (key > untilKey) break;
+        const sorted = sortedMonths(data);
+        const prev = sorted[sorted.length - 1];
+        const startBalance = prev ? round2(summariseMonth(prev).headroom) : 0;
+        const month = createMonthFromTemplates(st.data.templates, key, startBalance);
+        months.push(month);
+        added.push(month);
+      }
+      if (added.length === 0) return st;
+      const data = { ...st.data, months };
+      saveLocal(data);
+      for (const m of added) void track(api.saveExpenseMonth(m));
+      return { data, selectedKey: added[added.length - 1].key };
+    }),
   deleteMonth: (key) =>
     set((st) => {
       cancelMonthSave(key);
       const data = { ...st.data, months: st.data.months.filter((m) => m.key !== key) };
       saveLocal(data);
       void track(api.deleteExpenseMonth(key));
-      const selectedKey = st.selectedKey === key ? latestKey(data) : st.selectedKey;
+      const selectedKey = st.selectedKey === key ? defaultKey(data) : st.selectedKey;
       return { data, selectedKey };
     }),
 }));
 
-function latestKey(d: ExpenseData): string | null {
-  const months = sortedMonths(d);
-  return months.length > 0 ? months[months.length - 1].key : null;
+/** Default selection: the current calendar month, or the nearest tracked one. */
+function defaultKey(d: ExpenseData): string | null {
+  return defaultMonthKey(d, monthKeyOf(new Date()));
 }
 
 function round2(x: number): number {
@@ -168,7 +203,7 @@ export async function applyRestoredExpenses(
   } else if (fromBackup) {
     const data = migrateExpenseData(fromBackup);
     saveLocal(data);
-    useExpenseStore.setState({ data, selectedKey: latestKey(data) });
+    useExpenseStore.setState({ data, selectedKey: defaultKey(data) });
   }
 }
 
@@ -186,7 +221,7 @@ export async function initExpensesFromDb(): Promise<void> {
       const selectedKey =
         st.selectedKey && remote.months.some((m) => m.key === st.selectedKey)
           ? st.selectedKey
-          : latestKey(remote);
+          : defaultKey(remote);
       useExpenseStore.setState({ data: remote, selectedKey, dbStatus: "online" });
     } else {
       const st = useExpenseStore.getState();

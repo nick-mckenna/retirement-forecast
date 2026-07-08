@@ -16,9 +16,9 @@ export function buildWorkbook(scenario: Scenario, result: SimResult): ExcelJS.Wo
 
   buildInterestRates(wb, scenario);
   buildIncomeTargetsSheet(wb, scenario);
-  buildTransactions(wb, result);
-  buildTaxSummary(wb, result);
-  buildDisposals(wb, result);
+  buildTransactions(wb, scenario, result);
+  buildTaxSummary(wb, scenario, result);
+  buildDisposals(wb, scenario, result);
   return wb;
 }
 
@@ -79,26 +79,28 @@ function buildIncomeTargetsSheet(wb: ExcelJS.Workbook, scenario: Scenario): void
   ws.columns.forEach((c) => (c.width = 20));
 }
 
-function buildTransactions(wb: ExcelJS.Workbook, result: SimResult): void {
+function buildTransactions(wb: ExcelJS.Workbook, scenario: Scenario, result: SimResult): void {
   const ws = wb.addWorksheet("Transactions");
+  const n = scenario.people.nick.name;
+  const t = scenario.people.tracy.name;
   const headers = [
     "Type",
     "Description",
     "Date",
-    "Nick Income",
-    "Tracy Income",
-    "Nick ISA",
-    "Tracy ISA",
-    "Nick Pension",
-    "Tracy Pension",
-    "Nick GIA",
-    "Tracy GIA",
-    "Nick Savings",
-    "Tracy Savings",
-    "Nick Gilts",
-    "Tracy Gilts",
-    "Nick Tax",
-    "Tracy Tax",
+    `${n} Income`,
+    `${t} Income`,
+    `${n} ISA`,
+    `${t} ISA`,
+    `${n} Pension`,
+    `${t} Pension`,
+    `${n} GIA`,
+    `${t} GIA`,
+    `${n} Savings`,
+    `${t} Savings`,
+    `${n} Gilts`,
+    `${t} Gilts`,
+    `${n} Tax`,
+    `${t} Tax`,
     "Savings & Gilts",
     "Net Worth",
   ];
@@ -141,16 +143,18 @@ function buildTransactions(wb: ExcelJS.Workbook, result: SimResult): void {
   ws.views = [{ state: "frozen", ySplit: 1 }];
 }
 
-function buildDisposals(wb: ExcelJS.Workbook, result: SimResult): void {
+function buildDisposals(wb: ExcelJS.Workbook, scenario: Scenario, result: SimResult): void {
   const ws = wb.addWorksheet("Disposals");
+  const n = scenario.people.nick.name;
+  const t = scenario.people.tracy.name;
   ws.addRow([
     "Tax Year",
-    "Nick Pension",
-    "Nick GIA",
-    "Nick ISA",
-    "Tracy Pension",
-    "Tracy GIA",
-    "Tracy ISA",
+    `${n} Pension`,
+    `${n} GIA`,
+    `${n} ISA`,
+    `${t} Pension`,
+    `${t} GIA`,
+    `${t} ISA`,
     "Bed & ISA",
     "Gilts Matured",
     "Gain Realised",
@@ -181,20 +185,22 @@ function buildDisposals(wb: ExcelJS.Workbook, result: SimResult): void {
   ws.columns.forEach((c) => (c.width = 14));
 }
 
-function buildTaxSummary(wb: ExcelJS.Workbook, result: SimResult): void {
+function buildTaxSummary(wb: ExcelJS.Workbook, scenario: Scenario, result: SimResult): void {
   const ws = wb.addWorksheet("Tax Summary");
+  const n = scenario.people.nick.name;
+  const t = scenario.people.tracy.name;
   ws.addRow([
     "Tax Year",
-    "Nick Age",
-    "Tracy Age",
+    `${n} Age`,
+    `${t} Age`,
     "Income Target",
     "Buffer Target",
     "Buffer End",
     "Net Worth End",
-    "Nick Income Tax",
-    "Nick CGT",
-    "Tracy Income Tax",
-    "Tracy CGT",
+    `${n} Income Tax`,
+    `${n} CGT`,
+    `${t} Income Tax`,
+    `${t} CGT`,
     "Total Tax",
   ]);
   ws.getRow(1).font = { bold: true };

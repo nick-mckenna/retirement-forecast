@@ -9,17 +9,20 @@ import {
 } from "../../server/expenseMapping";
 
 /** Expense data with every optional field exercised in both states:
- *  day set/null, currentBalance set/null, templateId set/null, paid 0/partial. */
+ *  day set/null, currentBalance set/null, templateId set/null, paid 0/partial,
+ *  accountId set/null (both on templates and on month lines). */
 function fullExpenseData(): ExpenseData {
   return {
     templates: {
       expenses: [
-        { id: "t-council", name: "Council Tax", day: 1, amount: 307 },
-        { id: "t-cleaner", name: "Cleaner", day: null, amount: 141 },
+        { id: "t-council", name: "Council Tax", day: 1, amount: 307, accountId: null },
+        { id: "t-cleaner", name: "Cleaner", day: null, amount: 141, accountId: null },
+        { id: "t-invest", name: "Savings / Investments", day: 30, amount: 2000, accountId: "nick-vanguard-isa" },
       ],
       income: [
-        { id: "t-salary", name: "Raworths Salary", amount: 2879.24 },
-        { id: "t-divs", name: "MCL Divs", amount: 8750 },
+        { id: "t-salary", name: "Raworths Salary", amount: 2879.24, accountId: null },
+        { id: "t-divs", name: "MCL Divs", amount: 8750, accountId: null },
+        { id: "t-frompb", name: "From Premium Bonds", amount: 0, accountId: "tracy-premium-bonds" },
       ],
     },
     months: [
@@ -28,22 +31,26 @@ function fullExpenseData(): ExpenseData {
         startBalance: 500,
         currentBalance: null,
         expenses: [
-          { id: "m2-council", templateId: "t-council", name: "Council Tax", day: 1, amount: 0, paid: 0 },
+          { id: "m2-council", templateId: "t-council", name: "Council Tax", day: 1, amount: 0, paid: 0, accountId: null },
         ],
-        income: [{ id: "m2-salary", templateId: "t-salary", name: "Raworths Salary", amount: 2791.65 }],
+        income: [
+          { id: "m2-salary", templateId: "t-salary", name: "Raworths Salary", amount: 2791.65, accountId: null },
+        ],
       },
       {
         key: "2026-01",
         startBalance: 332.52,
         currentBalance: 714.41,
         expenses: [
-          { id: "m1-council", templateId: "t-council", name: "Council Tax", day: 1, amount: 291, paid: 291 },
-          { id: "m1-valet", templateId: null, name: "Car Valet", day: 5, amount: 60, paid: 30 },
-          { id: "m1-cleaner", templateId: "t-cleaner", name: "Cleaner", day: null, amount: 258, paid: 0 },
+          { id: "m1-council", templateId: "t-council", name: "Council Tax", day: 1, amount: 291, paid: 291, accountId: null },
+          { id: "m1-valet", templateId: null, name: "Car Valet", day: 5, amount: 60, paid: 30, accountId: null },
+          { id: "m1-cleaner", templateId: "t-cleaner", name: "Cleaner", day: null, amount: 258, paid: 0, accountId: null },
+          { id: "m1-invest", templateId: "t-invest", name: "Savings / Investments", day: 30, amount: 2000, paid: 2000, accountId: "nick-vanguard-isa" },
         ],
         income: [
-          { id: "m1-salary", templateId: "t-salary", name: "Raworths Salary", amount: 2791.65 },
-          { id: "m1-oneoff", templateId: null, name: "Tax refund", amount: 123.45 },
+          { id: "m1-salary", templateId: "t-salary", name: "Raworths Salary", amount: 2791.65, accountId: null },
+          { id: "m1-oneoff", templateId: null, name: "Tax refund", amount: 123.45, accountId: null },
+          { id: "m1-frompb", templateId: "t-frompb", name: "From Premium Bonds", amount: 1500, accountId: "tracy-premium-bonds" },
         ],
       },
     ],
@@ -104,10 +111,21 @@ describe("expense SQL row mapping", () => {
     const d = fullExpenseData();
     const back = rowsToExpenseData(simulateDbReadback(expenseDataToRows(d)));
     const jan = back.months.find((m) => m.key === "2026-01")!;
-    expect(jan.expenses.map((e) => e.id)).toEqual(["m1-council", "m1-valet", "m1-cleaner"]);
+    expect(jan.expenses.map((e) => e.id)).toEqual(["m1-council", "m1-valet", "m1-cleaner", "m1-invest"]);
     expect(jan.startBalance).toBe(332.52);
     expect(jan.expenses[1].paid).toBe(30);
     expect(jan.income[1].amount).toBe(123.45);
+  });
+
+  it("preserves account tags on templates and month lines", () => {
+    const d = fullExpenseData();
+    const back = rowsToExpenseData(simulateDbReadback(expenseDataToRows(d)));
+    expect(back.templates.expenses.find((e) => e.id === "t-invest")!.accountId).toBe("nick-vanguard-isa");
+    expect(back.templates.income.find((i) => i.id === "t-frompb")!.accountId).toBe("tracy-premium-bonds");
+    const jan = back.months.find((m) => m.key === "2026-01")!;
+    expect(jan.expenses.find((e) => e.id === "m1-invest")!.accountId).toBe("nick-vanguard-isa");
+    expect(jan.income.find((i) => i.id === "m1-frompb")!.accountId).toBe("tracy-premium-bonds");
+    expect(jan.expenses.find((e) => e.id === "m1-council")!.accountId).toBeNull();
   });
 });
 
@@ -123,5 +141,28 @@ describe("expense data migration", () => {
     expect(d.months[0].expenses).toEqual([]);
     expect(d.months[0].income).toEqual([]);
     expect(d.months[0].currentBalance).toBeNull();
+  });
+
+  it("backfills accountId on pre-tagging saves", () => {
+    const old = {
+      templates: {
+        expenses: [{ id: "t1", name: "Council Tax", day: 1, amount: 307 }],
+        income: [{ id: "t2", name: "Salary", amount: 1000 }],
+      },
+      months: [
+        {
+          key: "2026-01",
+          startBalance: 0,
+          currentBalance: null,
+          expenses: [{ id: "e1", templateId: "t1", name: "Council Tax", day: 1, amount: 307, paid: 0 }],
+          income: [{ id: "i1", templateId: "t2", name: "Salary", amount: 1000 }],
+        },
+      ],
+    } as unknown as ExpenseData;
+    const d = migrateExpenseData(old);
+    expect(d.templates.expenses[0].accountId).toBeNull();
+    expect(d.templates.income[0].accountId).toBeNull();
+    expect(d.months[0].expenses[0].accountId).toBeNull();
+    expect(d.months[0].income[0].accountId).toBeNull();
   });
 });

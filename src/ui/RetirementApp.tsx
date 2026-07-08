@@ -1,5 +1,8 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../store/scenarioStore";
+import { usePreRetirementStore } from "../store/preRetirementStore";
+import { useExpenseStore } from "../store/expenseStore";
+import { resolveScenarioForRun } from "../preretirement/link";
 import { runForecast } from "../strategy/optimiser";
 import { InputsPanel } from "./InputsPanel";
 import { Charts } from "./Charts";
@@ -27,12 +30,22 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 export function RetirementApp() {
-  const scenario = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
+  const stored = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
+  const preData = usePreRetirementStore((st) => st.data);
+  const expenseMonths = useExpenseStore((st) => st.data.months);
   const [tab, setTab] = useState<Tab>("dashboard");
 
+  // When the scenario is linked, its starting balances come from the
+  // pre-retirement projection; the engine itself stays untouched.
+  const resolved = useMemo(
+    () => resolveScenarioForRun(stored, preData, expenseMonths),
+    [stored, preData, expenseMonths],
+  );
+  const scenario = resolved.scenario;
   const outcome = useMemo(() => runForecast(scenario), [scenario]);
   const result = outcome.result;
 
+  const warnings = [...resolved.warnings, ...result.warnings];
   const last = result.years[result.years.length - 1];
   const totalTax = outcome.totalTax;
 
@@ -45,9 +58,9 @@ export function RetirementApp() {
       <main className="main">
         <ScenarioBar scenario={scenario} result={result} />
 
-        {result.warnings.length > 0 && (
+        {warnings.length > 0 && (
           <div className="warn-banner">
-            {result.warnings.map((w, i) => (
+            {warnings.map((w, i) => (
               <div key={i}>⚠ {w}</div>
             ))}
           </div>
@@ -92,12 +105,12 @@ export function RetirementApp() {
           ))}
         </div>
 
-        {tab === "dashboard" && <Charts result={result} />}
-        {tab === "ledger" && <LedgerTable result={result} />}
+        {tab === "dashboard" && <Charts result={result} scenario={scenario} />}
+        {tab === "ledger" && <LedgerTable result={result} scenario={scenario} />}
         {tab === "purchases" && <PurchasesView scenario={scenario} />}
-        {tab === "tax" && <TaxView result={result} />}
+        {tab === "tax" && <TaxView result={result} scenario={scenario} />}
         {tab === "disposals" && <DisposalsView result={result} scenario={scenario} />}
-        {tab === "gilts" && <GiltsView result={result} />}
+        {tab === "gilts" && <GiltsView result={result} scenario={scenario} />}
         {tab === "income" && <IncomeTargetsView scenario={scenario} />}
         {tab === "taxparams" && <TaxParamsEditor scenario={scenario} />}
       </main>

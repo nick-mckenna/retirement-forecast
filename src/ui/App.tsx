@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { RetirementApp } from "./RetirementApp";
+import { PreRetirementApp } from "./preretirement/PreRetirementApp";
 import { ExpensesApp } from "./expenses/ExpensesApp";
 
-// Top-level shell: the app is growing beyond retirement forecasting into a
-// small suite (retirement forecast, monthly expense tracking, and eventually
-// pre-retirement forecasting), so navigation starts with a module switch and
-// each module owns its own layout below the bar.
+// Top-level shell: the app is a small suite (retirement forecast,
+// pre-retirement accumulation forecast, monthly expense tracking), so
+// navigation starts with a module switch and each module owns its own
+// layout below the bar.
 
-type Module = "retirement" | "expenses";
+type Module = "retirement" | "preretirement" | "expenses";
 
 const MODULES: { id: Module; label: string }[] = [
-  { id: "retirement", label: "Retirement forecast" },
   { id: "expenses", label: "Monthly expenses" },
+  { id: "preretirement", label: "Pre-retirement" },
+  { id: "retirement", label: "Retirement forecast" },
 ];
 
 export function App() {
@@ -34,6 +36,7 @@ export function App() {
       </header>
 
       {module === "retirement" && <RetirementApp />}
+      {module === "preretirement" && <PreRetirementApp />}
       {module === "expenses" && <ExpensesApp />}
     </div>
   );

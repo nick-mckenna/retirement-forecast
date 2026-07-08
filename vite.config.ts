@@ -11,5 +11,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    // Any test that imports server/db.ts (now or in future) must bootstrap
+    // and use the test database, never the production RetirementForecast one.
+    env: { RETIREMENT_DB_NAME: "RetirementForecastTest" },
   },
 });

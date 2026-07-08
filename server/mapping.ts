@@ -24,6 +24,7 @@ export interface ScenarioRow {
   id: string;
   name: string;
   startDate: SqlDate;
+  linkPreRetirement: SqlBool;
   investmentGrowth: SqlNum;
   savingsInterest: SqlNum;
   inflation: SqlNum;
@@ -129,6 +130,7 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       id: s.id,
       name: s.name,
       startDate: s.startDate,
+      linkPreRetirement: s.linkPreRetirement,
       investmentGrowth: s.rates.investmentGrowth,
       savingsInterest: s.rates.savingsInterest,
       inflation: s.rates.inflation,
@@ -214,6 +216,7 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
     id: sc.id,
     name: sc.name,
     startDate: iso(sc.startDate),
+    linkPreRetirement: bool(sc.linkPreRetirement),
     people: { nick: toPerson("nick", nick), tracy: toPerson("tracy", tracy) },
     balances: { nick: toBalances(nick), tracy: toBalances(tracy) },
     rates: {

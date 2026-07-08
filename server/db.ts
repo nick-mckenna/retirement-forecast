@@ -12,7 +12,9 @@ import sql from "mssql/msnodesqlv8";
 
 export { sql };
 
-export const DB_NAME = "RetirementForecast";
+/** Production data lives in the default; tests must never touch it, so vitest
+ *  pins RETIREMENT_DB_NAME=RetirementForecastTest (see vite.config.ts). */
+export const DB_NAME = process.env.RETIREMENT_DB_NAME || "RetirementForecast";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CREDS_PATH = resolve(here, "..", "containerSecrets", "sql-creds.json");
@@ -69,6 +71,7 @@ const SCHEMA: string[] = [
      taxMode NVARCHAR(10) NOT NULL,
      lifetimeFillFraction FLOAT NULL,
      finalIncomeDate DATE NOT NULL,
+     linkPreRetirement BIT NOT NULL CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0,
      sortOrder INT NOT NULL CONSTRAINT DF_Scenario_sortOrder DEFAULT 0,
      updatedAt DATETIME2 NOT NULL CONSTRAINT DF_Scenario_updatedAt DEFAULT SYSUTCDATETIME()
    )`,
@@ -150,6 +153,7 @@ const SCHEMA: string[] = [
      name NVARCHAR(200) NOT NULL,
      dayOfMonth INT NULL,
      amount FLOAT NOT NULL,
+     accountId NVARCHAR(64) NULL,
      sortOrder INT NOT NULL CONSTRAINT DF_ExpenseTemplate_sortOrder DEFAULT 0,
      CONSTRAINT PK_ExpenseTemplate PRIMARY KEY (kind, itemId),
      CONSTRAINT CK_ExpenseTemplate_kind CHECK (kind IN (N'expense', N'income'))
@@ -172,10 +176,55 @@ const SCHEMA: string[] = [
      dayOfMonth INT NULL,
      amount FLOAT NOT NULL,
      paid FLOAT NULL,
+     accountId NVARCHAR(64) NULL,
      sortOrder INT NOT NULL CONSTRAINT DF_ExpenseMonthItem_sortOrder DEFAULT 0,
      CONSTRAINT PK_ExpenseMonthItem PRIMARY KEY (monthKey, kind, itemId),
      CONSTRAINT CK_ExpenseMonthItem_kind CHECK (kind IN (N'expense', N'income'))
    )`,
+  // Pre-retirement (accumulation) forecast (global, like the expense tracker).
+  // Accounts are a user-editable registry of real accounts; each has an owner
+  // and a kind (the retirement-pot grouping). accountId tags on expense lines
+  // are validated in code, not by FK: the two modules save through independent
+  // endpoints/transactions, and a deleted account must not break saved months.
+  `IF OBJECT_ID(N'dbo.PreRetirementState', N'U') IS NULL
+   CREATE TABLE dbo.PreRetirementState (
+     id INT NOT NULL CONSTRAINT PK_PreRetirementState PRIMARY KEY CONSTRAINT CK_PreRetirementState_singleton CHECK (id = 1),
+     openingMonth NVARCHAR(7) NOT NULL
+   )`,
+  `IF OBJECT_ID(N'dbo.PreRetirementAccount', N'U') IS NULL
+   CREATE TABLE dbo.PreRetirementAccount (
+     accountId NVARCHAR(64) NOT NULL CONSTRAINT PK_PreRetirementAccount PRIMARY KEY,
+     name NVARCHAR(200) NOT NULL,
+     ownerId NVARCHAR(10) NOT NULL,
+     kind NVARCHAR(20) NOT NULL,
+     openingBalance FLOAT NOT NULL,
+     gainFraction FLOAT NULL,
+     sortOrder INT NOT NULL CONSTRAINT DF_PreRetirementAccount_sortOrder DEFAULT 0,
+     CONSTRAINT CK_PreRetirementAccount_kind
+       CHECK (kind IN (N'isa', N'pension', N'gia', N'savings', N'premiumBonds', N'gilts'))
+   )`,
+  `IF OBJECT_ID(N'dbo.PreRetirementAccountOverride', N'U') IS NULL
+   CREATE TABLE dbo.PreRetirementAccountOverride (
+     accountId NVARCHAR(64) NOT NULL
+       CONSTRAINT FK_PreRetirementAccountOverride_Account
+       REFERENCES dbo.PreRetirementAccount(accountId) ON DELETE CASCADE,
+     monthKey NVARCHAR(7) NOT NULL,
+     value FLOAT NOT NULL,
+     CONSTRAINT PK_PreRetirementAccountOverride PRIMARY KEY (accountId, monthKey)
+   )`,
+  // The short-lived fixed-pots schema this registry replaced (shipped empty,
+  // superseded the same week — safe to drop).
+  `IF OBJECT_ID(N'dbo.PreRetirementOverride', N'U') IS NOT NULL DROP TABLE dbo.PreRetirementOverride`,
+  `IF OBJECT_ID(N'dbo.PreRetirementPot', N'U') IS NOT NULL DROP TABLE dbo.PreRetirementPot`,
+  // Columns added after the tables first shipped (fresh installs get them in
+  // the CREATE TABLE statements above; existing databases via these guards).
+  `IF COL_LENGTH(N'dbo.Scenario', N'linkPreRetirement') IS NULL
+   ALTER TABLE dbo.Scenario ADD linkPreRetirement BIT NOT NULL
+     CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.ExpenseTemplate', N'accountId') IS NULL
+   ALTER TABLE dbo.ExpenseTemplate ADD accountId NVARCHAR(64) NULL`,
+  `IF COL_LENGTH(N'dbo.ExpenseMonthItem', N'accountId') IS NULL
+   ALTER TABLE dbo.ExpenseMonthItem ADD accountId NVARCHAR(64) NULL`,
 ];
 
 let poolPromise: Promise<sql.ConnectionPool> | null = null;

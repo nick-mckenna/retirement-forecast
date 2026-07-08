@@ -148,6 +148,13 @@ export interface Scenario {
   name: string;
   /** ISO date of the model start (the "Starting Balances" row). */
   startDate: string;
+  /**
+   * When true, the starting balances (isa/pension/gia/savings/gilts +
+   * giaGainFraction) are computed live from the pre-retirement projection
+   * sampled at `startDate` (savings + premium bonds merge into `savings`);
+   * the manual `balances` fields are kept but ignored while linked.
+   */
+  linkPreRetirement: boolean;
   people: Record<PersonId, Person>;
   balances: Record<PersonId, StartingBalances>;
   rates: Rates;

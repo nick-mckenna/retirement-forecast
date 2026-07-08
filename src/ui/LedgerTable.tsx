@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { SimResult } from "../engine/simulate";
+import type { Scenario } from "../model/types";
 import type { LedgerRow } from "../engine/ledger";
 import { parseDate, taxYearStartYear } from "../tax/taxYear";
 import { classForNumber, money, shortDate } from "./format";
@@ -58,11 +59,13 @@ function Row({
   );
 }
 
-const COPY_HEADERS = [
-  "Type", "Description", "Date", "Nick Income", "Tracy Income", "Nick ISA", "Tracy ISA",
-  "Nick Pension", "Tracy Pension", "Nick GIA", "Tracy GIA", "Nick Savings", "Tracy Savings",
-  "Nick Gilts", "Tracy Gilts", "Nick Tax", "Tracy Tax", "Savings & Gilts", "Net Worth",
-];
+function copyHeaders(n: string, t: string): string[] {
+  return [
+    "Type", "Description", "Date", `${n} Income`, `${t} Income`, `${n} ISA`, `${t} ISA`,
+    `${n} Pension`, `${t} Pension`, `${n} GIA`, `${t} GIA`, `${n} Savings`, `${t} Savings`,
+    `${n} Gilts`, `${t} Gilts`, `${n} Tax`, `${t} Tax`, "Savings & Gilts", "Net Worth",
+  ];
+}
 
 function rowValues(r: LedgerRow): (string | number)[] {
   return [
@@ -75,11 +78,13 @@ function rowValues(r: LedgerRow): (string | number)[] {
   ];
 }
 
-export function LedgerTable({ result }: { result: SimResult }) {
+export function LedgerTable({ result, scenario }: { result: SimResult; scenario: Scenario }) {
   const [mode, setMode] = useState<FilterMode>("calendar");
   const [year, setYear] = useState<string>("all");
   const [copied, setCopied] = useState(false);
   const { selected, toggle, rowClass } = useRowSelection();
+  const nick = scenario.people.nick.name;
+  const tracy = scenario.people.tracy.name;
 
   const buckets = Array.from(new Set(result.rows.map((r) => bucketOf(r, mode)))).sort();
   const rows = year === "all" ? result.rows : result.rows.filter((r) => bucketOf(r, mode) === year);
@@ -88,7 +93,7 @@ export function LedgerTable({ result }: { result: SimResult }) {
   const copyRow = () => {
     if (!selectedRow) return;
     const vals = rowValues(selectedRow);
-    const text = COPY_HEADERS.map((h, i) => `${h}\t${vals[i]}`).join("\n");
+    const text = copyHeaders(nick, tracy).map((h, i) => `${h}\t${vals[i]}`).join("\n");
     navigator.clipboard?.writeText(text).then(
       () => {
         setCopied(true);
@@ -136,20 +141,20 @@ export function LedgerTable({ result }: { result: SimResult }) {
               <th className="label"></th>
               <th className="label">Description</th>
               <th>Date</th>
-              <th>Nick Inc</th>
-              <th>Tracy Inc</th>
-              <th>Nick ISA</th>
-              <th>Tracy ISA</th>
-              <th>Nick Pen</th>
-              <th>Tracy Pen</th>
-              <th>Nick GIA</th>
-              <th>Tracy GIA</th>
-              <th>Nick Sav</th>
-              <th>Tracy Sav</th>
-              <th>Nick Gilts</th>
-              <th>Tracy Gilts</th>
-              <th>Nick Tax</th>
-              <th>Tracy Tax</th>
+              <th>{nick} Inc</th>
+              <th>{tracy} Inc</th>
+              <th>{nick} ISA</th>
+              <th>{tracy} ISA</th>
+              <th>{nick} Pen</th>
+              <th>{tracy} Pen</th>
+              <th>{nick} GIA</th>
+              <th>{tracy} GIA</th>
+              <th>{nick} Sav</th>
+              <th>{tracy} Sav</th>
+              <th>{nick} Gilts</th>
+              <th>{tracy} Gilts</th>
+              <th>{nick} Tax</th>
+              <th>{tracy} Tax</th>
               <th>Sav & Gilts</th>
               <th>Net Worth</th>
             </tr>

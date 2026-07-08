@@ -4,7 +4,9 @@ import { defaultExpenseData } from "../model/expenseTypes";
 import {
   addMonths,
   createMonthFromTemplates,
+  defaultMonthKey,
   isMonthKey,
+  monthKeysBetween,
   monthLabel,
   monthWarnings,
   nextMonthKey,
@@ -20,12 +22,14 @@ function january2026(): ExpenseMonth {
     day,
     amount,
     paid,
+    accountId: null,
   });
   const inc = (name: string, amount: number) => ({
     id: `2026-01:${name}`,
     templateId: null,
     name,
     amount,
+    accountId: null,
   });
   return {
     key: "2026-01",
@@ -76,10 +80,10 @@ describe("month summary (golden values from Expenditure2026.xlsx)", () => {
     const m = january2026();
     m.key = "2026-03";
     m.expenses = [
-      { id: "x", templateId: null, name: "Everything", day: null, amount: 11028.65, paid: 3470.43 },
+      { id: "x", templateId: null, name: "Everything", day: null, amount: 11028.65, paid: 3470.43, accountId: null },
     ];
     m.startBalance = 750;
-    m.income = [{ id: "i", templateId: null, name: "All income", amount: 10148.96 }];
+    m.income = [{ id: "i", templateId: null, name: "All income", amount: 10148.96, accountId: null }];
     m.currentBalance = 8316.16;
     const s = summariseMonth(m);
     expect(s.headroom).toBeCloseTo(-129.69, 2); // sheet B33, negative
@@ -138,6 +142,23 @@ describe("month keys", () => {
     expect(addMonths("2026-12", 1)).toBe("2027-01");
     expect(addMonths("2026-01", -1)).toBe("2025-12");
     expect(addMonths("2026-07", 6)).toBe("2027-01");
+  });
+
+  it("enumerates inclusive ranges across year boundaries", () => {
+    expect(monthKeysBetween("2026-11", "2027-02")).toEqual(["2026-11", "2026-12", "2027-01", "2027-02"]);
+    expect(monthKeysBetween("2026-07", "2026-07")).toEqual(["2026-07"]);
+    expect(monthKeysBetween("2026-08", "2026-07")).toEqual([]);
+  });
+
+  it("defaults to the current month, else the nearest tracked one", () => {
+    const d = defaultExpenseData();
+    expect(defaultMonthKey(d, "2026-07")).toBeNull(); // nothing tracked yet
+    d.months = ["2026-05", "2026-06", "2026-07", "2026-08"].map((key) =>
+      createMonthFromTemplates(d.templates, key),
+    );
+    expect(defaultMonthKey(d, "2026-07")).toBe("2026-07"); // today is tracked
+    expect(defaultMonthKey(d, "2026-10")).toBe("2026-08"); // today past the list → latest
+    expect(defaultMonthKey(d, "2026-03")).toBe("2026-05"); // list all in the future → first
   });
 
   it("proposes the month after the latest tracked one", () => {

@@ -1,7 +1,12 @@
+import { useMemo } from "react";
 import type { PersonId, Scenario } from "../model/types";
 import { useStore } from "../store/scenarioStore";
+import { usePreRetirementStore } from "../store/preRetirementStore";
+import { useExpenseStore } from "../store/expenseStore";
+import { resolveLinkedBalances, handoffMonthKey } from "../preretirement/link";
+import { monthLabel } from "../expenses/calc";
 import { investableAssets, resolveIncome } from "../model/incomeTargets";
-import { money } from "./format";
+import { money, pct } from "./format";
 
 function NumField({
   label,
@@ -52,17 +57,42 @@ function PctField({
   );
 }
 
+function ValueRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <span>{value}</span>
+    </div>
+  );
+}
+
 export function InputsPanel() {
   const s = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
   const update = useStore((st) => st.update);
+  const preData = usePreRetirementStore((st) => st.data);
+  const expenseMonths = useExpenseStore((st) => st.data.months);
+
+  const linked = useMemo(
+    () => (s.linkPreRetirement ? resolveLinkedBalances(s, preData, expenseMonths) : null),
+    [s, preData, expenseMonths],
+  );
 
   const person = (id: PersonId) => {
     const set = (mut: (sc: Scenario) => void) => update(mut);
     const p = s.people[id];
     const b = s.balances[id];
+    const lb = linked?.balances[id];
     return (
       <div className="card" key={id}>
         <h2 style={{ color: id === "nick" ? "var(--nick)" : "var(--tracy)" }}>{p.name}</h2>
+        <div className="field">
+          <label>Name</label>
+          <input
+            type="text"
+            value={p.name}
+            onChange={(e) => set((sc) => (sc.people[id].name = e.target.value))}
+          />
+        </div>
         <div className="field">
           <label>Date of birth</label>
           <input
@@ -88,12 +118,29 @@ export function InputsPanel() {
           onChange={(v) => set((sc) => (sc.people[id].statePensionAnnual = v))}
         />
         <div className="section-title">Starting balances</div>
-        <NumField label="ISA" value={b.isa} step={1000} onChange={(v) => set((sc) => (sc.balances[id].isa = v))} />
-        <NumField label="Pension" value={b.pension} step={1000} onChange={(v) => set((sc) => (sc.balances[id].pension = v))} />
-        <NumField label="GIA" value={b.gia} step={1000} onChange={(v) => set((sc) => (sc.balances[id].gia = v))} />
-        <NumField label="Savings" value={b.savings} step={1000} onChange={(v) => set((sc) => (sc.balances[id].savings = v))} />
-        <NumField label="Gilts" value={b.gilts} step={1000} onChange={(v) => set((sc) => (sc.balances[id].gilts = v))} />
-        <PctField label="GIA embedded gain" value={b.giaGainFraction} onChange={(v) => set((sc) => (sc.balances[id].giaGainFraction = v))} />
+        {lb ? (
+          <>
+            <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
+              Projected by the Pre-retirement module at end of {monthLabel(handoffMonthKey(s.startDate))}.
+              Savings includes Premium Bonds.
+            </p>
+            <ValueRow label="ISA" value={money(lb.isa)} />
+            <ValueRow label="Pension" value={money(lb.pension)} />
+            <ValueRow label="GIA" value={money(lb.gia)} />
+            <ValueRow label="Savings" value={money(lb.savings)} />
+            <ValueRow label="Gilts" value={money(lb.gilts)} />
+            <ValueRow label="GIA embedded gain" value={pct(lb.giaGainFraction)} />
+          </>
+        ) : (
+          <>
+            <NumField label="ISA" value={b.isa} step={1000} onChange={(v) => set((sc) => (sc.balances[id].isa = v))} />
+            <NumField label="Pension" value={b.pension} step={1000} onChange={(v) => set((sc) => (sc.balances[id].pension = v))} />
+            <NumField label="GIA" value={b.gia} step={1000} onChange={(v) => set((sc) => (sc.balances[id].gia = v))} />
+            <NumField label="Savings" value={b.savings} step={1000} onChange={(v) => set((sc) => (sc.balances[id].savings = v))} />
+            <NumField label="Gilts" value={b.gilts} step={1000} onChange={(v) => set((sc) => (sc.balances[id].gilts = v))} />
+            <PctField label="GIA embedded gain" value={b.giaGainFraction} onChange={(v) => set((sc) => (sc.balances[id].giaGainFraction = v))} />
+          </>
+        )}
       </div>
     );
   };
@@ -197,8 +244,18 @@ export function InputsPanel() {
             onChange={(e) => update((sc) => (sc.startDate = e.target.value))}
           />
         </div>
+        <div className="field">
+          <label>Link to pre-retirement forecast</label>
+          <input
+            type="checkbox"
+            checked={s.linkPreRetirement}
+            onChange={(e) => update((sc) => (sc.linkPreRetirement = e.target.checked))}
+          />
+        </div>
         <p className="muted" style={{ fontSize: 12, margin: "4px 0 8px" }}>
-          Per-person opening balances are set in the Nick / Tracy cards below.
+          {s.linkPreRetirement
+            ? "Starting balances come live from the Pre-retirement module's projection at the model start date (Savings + Premium Bonds merge into Savings). The balance fields below are read-only while linked."
+            : `Per-person opening balances are set in the ${s.people.nick.name} / ${s.people.tracy.name} cards below.`}
         </p>
         <div className="section-title">Final income (one-off, tax already paid)</div>
         <div className="field">

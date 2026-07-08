@@ -3,6 +3,7 @@ import type { Scenario } from "../model/types";
 import type { SimResult } from "../engine/simulate";
 import { useStore } from "../store/scenarioStore";
 import { applyRestoredExpenses, useExpenseStore } from "../store/expenseStore";
+import { applyRestoredPreRetirement, usePreRetirementStore } from "../store/preRetirementStore";
 import { exportToExcel } from "../export/excelExport";
 import { api, BACKUP_FORMAT, type BackupFile } from "../api/client";
 import { DbChip } from "./DbChip";
@@ -35,6 +36,7 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
         activeId: store.activeId,
         scenarios: store.scenarios,
         expenses: useExpenseStore.getState().data,
+        preRetirement: usePreRetirementStore.getState().data,
       };
       download(backup, filename);
     }
@@ -50,15 +52,20 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
             alert("That backup file contains no scenarios.");
             return;
           }
+          const extras = [
+            parsed.expenses ? "the monthly expense tracker data" : null,
+            parsed.preRetirement ? "the pre-retirement forecast data" : null,
+          ].filter(Boolean);
           const ok = confirm(
             `Restore "${file.name}"?\n\nThis replaces ALL ${store.scenarios.length} scenario(s) ` +
               `in the database with the ${parsed.scenarios.length} scenario(s) from the backup` +
-              (parsed.expenses ? ", plus the monthly expense tracker data" : "") +
+              (extras.length > 0 ? `, plus ${extras.join(" and ")}` : "") +
               `.`,
           );
           if (!ok) return;
           const where = await store.restoreBackup(parsed);
           await applyRestoredExpenses(parsed.expenses, where);
+          await applyRestoredPreRetirement(parsed.preRetirement, where);
           if (where === "browser-only") {
             alert("Database not reachable — the backup was restored to browser storage only.");
           }

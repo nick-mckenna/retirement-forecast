@@ -2,6 +2,7 @@ import type { ExpenseMonth, MonthExpenseItem, MonthIncomeItem } from "../../mode
 import { useExpenseStore } from "../../store/expenseStore";
 import { monthWarnings, summariseMonth } from "../../expenses/calc";
 import { classForNumber, money } from "../format";
+import { AccountSelect } from "./AccountSelect";
 
 function parseAmount(v: string): number {
   const n = parseFloat(v);
@@ -33,11 +34,19 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
 
   const addExpense = () =>
     update((m) => {
-      m.expenses.push({ id: `e${Date.now()}`, templateId: null, name: "New expense", day: null, amount: 0, paid: 0 });
+      m.expenses.push({
+        id: `e${Date.now()}`,
+        templateId: null,
+        name: "New expense",
+        day: null,
+        amount: 0,
+        paid: 0,
+        accountId: null,
+      });
     });
   const addIncome = () =>
     update((m) => {
-      m.income.push({ id: `i${Date.now()}`, templateId: null, name: "New income", amount: 0 });
+      m.income.push({ id: `i${Date.now()}`, templateId: null, name: "New income", amount: 0, accountId: null });
     });
 
   return (
@@ -71,7 +80,7 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
         </div>
       </div>
 
-      <div className="card" style={{ maxWidth: 900 }}>
+      <div className="card" style={{ maxWidth: 1000 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2>Expenses</h2>
           <button className="primary" onClick={addExpense}>
@@ -81,13 +90,16 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
         <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
           Amounts here are this month's own copy — edit them freely without changing the standard
           list. <b>Paid</b> is what has actually left the account so far; <b>To pay</b> is what is
-          still due.
+          still due. <b>Pays into</b> tags money that goes into an investment account — those lines
+          feed the pre-retirement forecast (using the expected amount, not Paid).
         </p>
+        <div style={{ overflowX: "auto" }}>
         <table className="fit zebra">
           <thead>
             <tr>
               <th>Day</th>
               <th className="label">Item</th>
+              <th>Pays into</th>
               <th>Amount</th>
               <th>Paid</th>
               <th>To pay</th>
@@ -110,9 +122,15 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
                 <td className="label">
                   <input
                     type="text"
-                    style={{ width: 220 }}
+                    style={{ width: 200 }}
                     value={e.name}
                     onChange={(ev) => editExpense(e.id, (x) => (x.name = ev.target.value))}
+                  />
+                </td>
+                <td>
+                  <AccountSelect
+                    value={e.accountId}
+                    onChange={(v) => editExpense(e.id, (x) => (x.accountId = v))}
                   />
                 </td>
                 <td>
@@ -152,6 +170,7 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
             <tr>
               <th></th>
               <th className="label">Total</th>
+              <th></th>
               <th>{money(s.totalExpenses, 2)}</th>
               <th>{money(s.totalPaid, 2)}</th>
               <th className={classForNumber(s.totalToPay)}>{money(s.totalToPay, 2)}</th>
@@ -159,9 +178,10 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
             </tr>
           </tfoot>
         </table>
+        </div>
       </div>
 
-      <div className="card" style={{ maxWidth: 560 }}>
+      <div className="card" style={{ maxWidth: 780 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2>Income &amp; balances</h2>
           <button className="primary" onClick={addIncome}>
@@ -177,10 +197,17 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
             onChange={(ev) => update((m) => (m.startBalance = parseAmount(ev.target.value)))}
           />
         </div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+          <b>From account</b> tags money moved into the joint account from an investment account
+          (e.g. withdrawing Premium Bonds to pay for a holiday) — the pre-retirement forecast
+          deducts it from that account.
+        </p>
+        <div style={{ overflowX: "auto" }}>
         <table className="fit zebra">
           <thead>
             <tr>
               <th className="label">Source</th>
+              <th>From account</th>
               <th>Amount</th>
               <th></th>
             </tr>
@@ -194,6 +221,12 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
                     style={{ width: 220 }}
                     value={inc.name}
                     onChange={(ev) => editIncome(inc.id, (x) => (x.name = ev.target.value))}
+                  />
+                </td>
+                <td>
+                  <AccountSelect
+                    value={inc.accountId}
+                    onChange={(v) => editIncome(inc.id, (x) => (x.accountId = v))}
                   />
                 </td>
                 <td>
@@ -214,12 +247,13 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
           </tbody>
           <tfoot>
             <tr>
-              <th className="label">Total (with start balance)</th>
+              <th className="label" colSpan={2}>Total (with start balance)</th>
               <th>{money(s.totalAvailable, 2)}</th>
               <th></th>
             </tr>
           </tfoot>
         </table>
+        </div>
         <div className="field" style={{ maxWidth: 380, marginTop: 14 }}>
           <label>Current account balance right now</label>
           <input

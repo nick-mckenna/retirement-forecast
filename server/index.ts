@@ -15,10 +15,13 @@ import {
   replaceTemplates,
   upsertMonth,
 } from "./expenseRepo";
-import { migrateExpenseData, migrateScenario } from "../src/model/migrate";
+import { loadPreRetirement, replaceAllPreRetirement } from "./preRetirementRepo";
+import { migrateExpenseData, migratePreRetirementData, migrateScenario } from "../src/model/migrate";
 import { isMonthKey } from "../src/expenses/calc";
 import type { Scenario } from "../src/model/types";
 import type { ExpenseData, ExpenseMonth, ExpenseTemplates } from "../src/model/expenseTypes";
+import type { PreRetirementData } from "../src/model/preRetirementTypes";
+import { PRE_ACCOUNT_KINDS } from "../src/model/preRetirementTypes";
 
 const PORT = Number(process.env.PORT ?? 5174);
 
@@ -32,6 +35,8 @@ interface BackupFile {
   scenarios: Scenario[];
   /** Added later; absent from older backups (which then leave expenses untouched). */
   expenses?: ExpenseData;
+  /** Added later still; absent from older backups (pre-retirement left untouched). */
+  preRetirement?: PreRetirementData;
 }
 
 function assertScenario(body: unknown): Scenario {
@@ -73,6 +78,33 @@ function assertExpenseData(body: unknown): ExpenseData {
   assertTemplates(d.templates);
   d.months.forEach(assertExpenseMonth);
   return migrateExpenseData(d);
+}
+
+function assertPreRetirementData(body: unknown): PreRetirementData {
+  const bad = (msg: string) => Object.assign(new Error(msg), { status: 400 });
+  if (!body || typeof body !== "object") throw bad("Body is not pre-retirement data");
+  const d = migratePreRetirementData(body as PreRetirementData);
+  if (!isMonthKey(d.openingMonth)) throw bad("Body is not pre-retirement data (bad openingMonth)");
+  const ids = new Set<string>();
+  for (const a of d.accounts) {
+    if (typeof a.id !== "string" || a.id === "" || typeof a.name !== "string") {
+      throw bad("Bad account in pre-retirement data");
+    }
+    if (ids.has(a.id)) throw bad(`Duplicate account id "${a.id}"`);
+    ids.add(a.id);
+    if (a.owner !== "nick" && a.owner !== "tracy") throw bad(`Bad owner for account "${a.id}"`);
+    if (!PRE_ACCOUNT_KINDS.includes(a.kind)) throw bad(`Bad kind for account "${a.id}"`);
+    if (!Number.isFinite(a.openingBalance)) throw bad(`Bad opening balance for account "${a.id}"`);
+    if (a.openingGainFraction != null && !Number.isFinite(a.openingGainFraction)) {
+      throw bad(`Bad gain fraction for account "${a.id}"`);
+    }
+  }
+  for (const o of d.overrides) {
+    if (!ids.has(o.accountId) || !isMonthKey(o.monthKey) || !Number.isFinite(o.value)) {
+      throw bad("Bad balance override in pre-retirement data");
+    }
+  }
+  return d;
 }
 
 const app = express();
@@ -140,6 +172,18 @@ app.delete("/api/expenses/months/:key", async (req, res) => {
   res.status(204).end();
 });
 
+// ---- Pre-retirement forecast (global data, independent of scenarios) ----
+
+app.get("/api/preretirement", async (_req, res) => {
+  res.json(await loadPreRetirement(await getPool()));
+});
+
+app.put("/api/preretirement", async (req, res) => {
+  const { data } = req.body as { data: unknown };
+  await replaceAllPreRetirement(await getPool(), assertPreRetirementData(data));
+  res.status(204).end();
+});
+
 app.get("/api/export", async (_req, res) => {
   const pool = await getPool();
   const state = await loadState(pool);
@@ -150,6 +194,7 @@ app.get("/api/export", async (_req, res) => {
     activeId: state.activeId,
     scenarios: state.scenarios,
     expenses: await loadExpenseData(pool),
+    preRetirement: await loadPreRetirement(pool),
   };
   res.json(backup);
 });
@@ -162,8 +207,9 @@ app.post("/api/import", async (req, res) => {
   const scenarios = backup.scenarios.map(assertScenario);
   const pool = await getPool();
   await replaceAll(pool, { scenarios, activeId: backup.activeId ?? null });
-  // Older backups have no expense data; leave the tracker untouched for those.
+  // Older backups have no expense/pre-retirement data; leave those untouched.
   if (backup.expenses) await replaceAllExpenses(pool, assertExpenseData(backup.expenses));
+  if (backup.preRetirement) await replaceAllPreRetirement(pool, assertPreRetirementData(backup.preRetirement));
   res.json(await loadState(pool));
 });
 

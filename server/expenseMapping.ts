@@ -19,6 +19,7 @@ export interface ExpenseTemplateRow {
   name: string;
   dayOfMonth: SqlNum | null;
   amount: SqlNum;
+  accountId: string | null;
   sortOrder: number;
 }
 
@@ -37,6 +38,7 @@ export interface ExpenseMonthItemRow {
   dayOfMonth: SqlNum | null;
   amount: SqlNum;
   paid: SqlNum | null;
+  accountId: string | null;
   sortOrder: number;
 }
 
@@ -63,6 +65,7 @@ export function templatesToRows(t: ExpenseTemplates): ExpenseTemplateRow[] {
         name: e.name,
         dayOfMonth: e.day,
         amount: e.amount,
+        accountId: e.accountId ?? null,
         sortOrder: i,
       }),
     ),
@@ -73,6 +76,7 @@ export function templatesToRows(t: ExpenseTemplates): ExpenseTemplateRow[] {
         name: inc.name,
         dayOfMonth: null,
         amount: inc.amount,
+        accountId: inc.accountId ?? null,
         sortOrder: i,
       }),
     ),
@@ -84,10 +88,16 @@ export function rowsToTemplates(rows: ExpenseTemplateRow[]): ExpenseTemplates {
   return {
     expenses: sorted
       .filter((r) => r.kind === "expense")
-      .map((r) => ({ id: r.itemId, name: r.name, day: numOrNull(r.dayOfMonth), amount: num(r.amount) })),
+      .map((r) => ({
+        id: r.itemId,
+        name: r.name,
+        day: numOrNull(r.dayOfMonth),
+        amount: num(r.amount),
+        accountId: r.accountId ?? null,
+      })),
     income: sorted
       .filter((r) => r.kind === "income")
-      .map((r) => ({ id: r.itemId, name: r.name, amount: num(r.amount) })),
+      .map((r) => ({ id: r.itemId, name: r.name, amount: num(r.amount), accountId: r.accountId ?? null })),
   };
 }
 
@@ -109,6 +119,7 @@ export function monthToRows(m: ExpenseMonth): { month: ExpenseMonthRow; items: E
           dayOfMonth: e.day,
           amount: e.amount,
           paid: e.paid,
+          accountId: e.accountId ?? null,
           sortOrder: i,
         }),
       ),
@@ -122,6 +133,7 @@ export function monthToRows(m: ExpenseMonth): { month: ExpenseMonthRow; items: E
           dayOfMonth: null,
           amount: inc.amount,
           paid: null,
+          accountId: inc.accountId ?? null,
           sortOrder: i,
         }),
       ),
@@ -144,6 +156,7 @@ export function rowsToMonth(month: ExpenseMonthRow, items: ExpenseMonthItemRow[]
         day: numOrNull(r.dayOfMonth),
         amount: num(r.amount),
         paid: num(r.paid ?? 0),
+        accountId: r.accountId ?? null,
       })),
     income: sorted
       .filter((r) => r.kind === "income")
@@ -152,6 +165,7 @@ export function rowsToMonth(month: ExpenseMonthRow, items: ExpenseMonthItemRow[]
         templateId: r.templateId ?? null,
         name: r.name,
         amount: num(r.amount),
+        accountId: r.accountId ?? null,
       })),
   };
 }

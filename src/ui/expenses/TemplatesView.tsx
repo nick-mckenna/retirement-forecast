@@ -1,5 +1,6 @@
 import { useExpenseStore } from "../../store/expenseStore";
 import { money } from "../format";
+import { AccountSelect } from "./AccountSelect";
 
 function parseAmount(v: string): number {
   const n = parseFloat(v);
@@ -27,9 +28,11 @@ export function TemplatesView() {
       <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
         The standard set of monthly expenses and income sources. New months start as a copy of
         these lists; months already created are not affected by changes here. Leave the amount at 0
-        for items that vary every month (card bills) and fill them in on the month itself.
+        for items that vary every month (card bills) and fill them in on the month itself. Tag a
+        line with an investment account and every new month inherits the tag — that is how regular
+        contributions reach the pre-retirement forecast.
       </p>
-      <div className="grid-2" style={{ alignItems: "start", gap: 18, maxWidth: 1150 }}>
+      <div className="grid-2" style={{ alignItems: "start", gap: 18, maxWidth: 1400 }}>
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <h2>Standard expenses</h2>
@@ -37,18 +40,20 @@ export function TemplatesView() {
               className="primary"
               onClick={() =>
                 updateTemplates((t) => {
-                  t.expenses.push({ id: `e${Date.now()}`, name: "New expense", day: null, amount: 0 });
+                  t.expenses.push({ id: `e${Date.now()}`, name: "New expense", day: null, amount: 0, accountId: null });
                 })
               }
             >
               + Add
             </button>
           </div>
+          <div style={{ overflowX: "auto" }}>
           <table className="fit zebra">
             <thead>
               <tr>
                 <th>Day</th>
                 <th className="label">Item</th>
+                <th>Pays into</th>
                 <th>Default amount</th>
                 <th></th>
               </tr>
@@ -85,6 +90,17 @@ export function TemplatesView() {
                     />
                   </td>
                   <td>
+                    <AccountSelect
+                      value={e.accountId}
+                      onChange={(v) =>
+                        updateTemplates((t) => {
+                          const x = t.expenses.find((i) => i.id === e.id);
+                          if (x) x.accountId = v;
+                        })
+                      }
+                    />
+                  </td>
+                  <td>
                     <input
                       type="number"
                       step={0.01}
@@ -116,11 +132,13 @@ export function TemplatesView() {
               <tr>
                 <th></th>
                 <th className="label">Total</th>
+                <th></th>
                 <th>{money(totalExpenses, 2)}</th>
                 <th></th>
               </tr>
             </tfoot>
           </table>
+          </div>
         </div>
 
         <div className="card">
@@ -130,17 +148,19 @@ export function TemplatesView() {
               className="primary"
               onClick={() =>
                 updateTemplates((t) => {
-                  t.income.push({ id: `i${Date.now()}`, name: "New income", amount: 0 });
+                  t.income.push({ id: `i${Date.now()}`, name: "New income", amount: 0, accountId: null });
                 })
               }
             >
               + Add
             </button>
           </div>
+          <div style={{ overflowX: "auto" }}>
           <table className="fit zebra">
             <thead>
               <tr>
                 <th className="label">Source</th>
+                <th>From account</th>
                 <th>Default amount</th>
                 <th></th>
               </tr>
@@ -157,6 +177,17 @@ export function TemplatesView() {
                         updateTemplates((t) => {
                           const x = t.income.find((i) => i.id === inc.id);
                           if (x) x.name = ev.target.value;
+                        })
+                      }
+                    />
+                  </td>
+                  <td>
+                    <AccountSelect
+                      value={inc.accountId}
+                      onChange={(v) =>
+                        updateTemplates((t) => {
+                          const x = t.income.find((i) => i.id === inc.id);
+                          if (x) x.accountId = v;
                         })
                       }
                     />
@@ -191,12 +222,13 @@ export function TemplatesView() {
             </tbody>
             <tfoot>
               <tr>
-                <th className="label">Total</th>
+                <th className="label" colSpan={2}>Total</th>
                 <th>{money(totalIncome, 2)}</th>
                 <th></th>
               </tr>
             </tfoot>
           </table>
+          </div>
         </div>
       </div>
     </>

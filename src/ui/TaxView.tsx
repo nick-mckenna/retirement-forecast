@@ -1,9 +1,12 @@
 import type { SimResult } from "../engine/simulate";
+import type { Scenario } from "../model/types";
 import { money } from "./format";
 import { useRowSelection } from "./useRowSelection";
 
-export function TaxView({ result }: { result: SimResult }) {
+export function TaxView({ result, scenario }: { result: SimResult; scenario: Scenario }) {
   const { toggle, rowClass } = useRowSelection();
+  const nick = scenario.people.nick.name;
+  const tracy = scenario.people.tracy.name;
   return (
     <div className="card">
       <h2>Tax &amp; strategy by year</h2>
@@ -12,17 +15,17 @@ export function TaxView({ result }: { result: SimResult }) {
           <thead>
             <tr>
               <th className="label">Tax year</th>
-              <th>Nick age</th>
-              <th>Tracy age</th>
+              <th>{nick} age</th>
+              <th>{tracy} age</th>
               <th>Income target</th>
               <th>Buffer target</th>
               <th>Buffer end</th>
-              <th>Nick taxable inc</th>
-              <th>Nick income tax</th>
-              <th>Nick CGT</th>
-              <th>Tracy taxable inc</th>
-              <th>Tracy income tax</th>
-              <th>Tracy CGT</th>
+              <th>{nick} taxable inc</th>
+              <th>{nick} income tax</th>
+              <th>{nick} CGT</th>
+              <th>{tracy} taxable inc</th>
+              <th>{tracy} income tax</th>
+              <th>{tracy} CGT</th>
               <th>Total tax</th>
               <th>Net worth</th>
             </tr>

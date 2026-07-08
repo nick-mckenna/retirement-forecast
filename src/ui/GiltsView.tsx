@@ -1,8 +1,9 @@
 import type { SimResult } from "../engine/simulate";
+import type { Scenario } from "../model/types";
 import { money, shortDate } from "./format";
 import { useRowSelection } from "./useRowSelection";
 
-export function GiltsView({ result }: { result: SimResult }) {
+export function GiltsView({ result, scenario }: { result: SimResult; scenario: Scenario }) {
   const { toggle, rowClass } = useRowSelection();
   const gilts = [...result.gilts].sort(
     (a, b) =>
@@ -43,7 +44,7 @@ export function GiltsView({ result }: { result: SimResult }) {
               <tr key={i} className={rowClass(i)} onClick={() => toggle(i)}>
                 <td className="label">{shortDate(g.purchaseDateIso)}</td>
                 <td className="label" style={{ color: g.holder === "nick" ? "var(--nick)" : "var(--tracy)" }}>
-                  {g.holder === "nick" ? "Nick" : "Tracy"}
+                  {scenario.people[g.holder].name}
                 </td>
                 <td className="label">{g.name}</td>
                 <td>{money(g.nominal)}</td>

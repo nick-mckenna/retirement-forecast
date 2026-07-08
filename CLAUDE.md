@@ -22,15 +22,19 @@ There is no linter configured; `tsc --noEmit` is the type gate. Tests live in `s
 
 ## What this is
 
-A **local-first** SPA (React + TS + Vite) plus a small local persistence API, growing into a small
-household-finance suite. `src/ui/App.tsx` is a thin shell with a top-level **module switcher**;
-there are currently two modules (pre-retirement forecasting is planned as a third):
+A **local-first** SPA (React + TS + Vite) plus a small local persistence API — a small
+household-finance suite. `src/ui/App.tsx` is a thin shell with a top-level **module switcher**
+over three modules:
 
 1. **Retirement forecast** (`src/ui/RetirementApp.tsx` and most of `src/`) — models a UK couple's
    retirement drawdown. It reproduces the original `NewForecast.xlsx` (kept in the repo root and
    used as the golden reference for tests), fills in a full UK tax calculation, and proposes a
    tax-aware buy/sell strategy. All state is a plain-data `Scenario` object.
-2. **Monthly expenses** (`src/ui/expenses/`, see "Monthly expense tracker" below) — reproduces
+2. **Pre-retirement forecast** (`src/ui/preretirement/`, see "Pre-retirement forecast" below) —
+   the accumulation phase: projects the couple's real investment accounts month by month from
+   today to the retirement start date, fed by contribution lines tagged in the expense tracker,
+   and hands its ending balances to a linked retirement scenario.
+3. **Monthly expenses** (`src/ui/expenses/`, see "Monthly expense tracker" below) — reproduces
    `Expenditure2026.xlsx` (also in the repo root, golden reference for its tests): tracks the joint
    current account month by month so it never drops below zero.
 
@@ -76,6 +80,55 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   `statePension.ts`; `taxParams.ts` holds editable per-year thresholds (2025/26 baseline, frozen to
   2028 then uprated with inflation via `projectTaxParams`/`resolveTaxParams`).
 
+## Pre-retirement forecast
+
+The accumulation-phase module linking all three feature sets. Same layering as the others (pure
+engine → zustand store → SQL tables), and **global** like the expense tracker (facts about the
+real accounts — scenario duplicate/delete must never fork or destroy it).
+
+- **Accounts are a user-editable registry of real accounts**
+  (`src/model/preRetirementTypes.ts`): `InvestmentAccount { id, name, owner, kind,
+  openingBalance, openingGainFraction }`, e.g. "Nick Vanguard ISA", "Tracy Royal London".
+  The `kind` (`PreAccountKind`: isa | pension | gia | savings |
+  **premiumBonds** | gilts) is the grouping vocabulary shared by all three modules — it picks the
+  growth rate and the retirement pot at handoff. `defaultPreRetirementData()` ships the
+  household's real 16 accounts with zero balances (like `defaultExpenseData` ships the real
+  standing orders); `emptyPreRetirementData()` is what the server reports before anything is
+  saved. Expense/income lines are tagged with an account's `id`.
+  `PreRetirementData = { openingMonth, accounts, overrides }`: opening balances are as of the
+  START of `openingMonth`; a `BalanceOverride { accountId, monthKey, value }` records the
+  **actual** balance at the END of a month and re-anchors the projection (this — not the expense
+  tracker's Paid column — is how real growth, including losses, is fed in). Deleting an account
+  keeps its tags on expense lines (shown as "(deleted account)", excluded from the forecast with
+  a warning) — deliberately no FK from the expense tables, so history is never broken.
+- **Engine** `src/preretirement/project.ts` (pure, like `simulate`): `projectAccounts(data,
+  expenseMonths, rates, endMonth)` walks each account monthly — growth first
+  (`annualToMonthly`), then tagged flows (expense line = contribution IN, income line =
+  withdrawal OUT, always the expected `amount`, never `paid`), then any override. Growth rates
+  come from the active scenario's `Rates` via `ratesForKinds` (isa/pension/gia →
+  `investmentGrowth`, savings/premiumBonds → `savingsInterest`, gilts → `giltCoupon`). It tracks
+  each person's GIA cost basis for the CGT handoff and reports `missingMonthKeys` /
+  `unknownAccountIds` as warnings. `balancesAt` samples any month (clamped) for the Snapshot tab.
+- **Handoff** `src/preretirement/link.ts`: `handoffMonthKey(startDate)` = the month before the
+  scenario's start month — the projection ends there and the retirement engine owns everything
+  from `startDate`, which is the no-double-counting rule. `Scenario.linkPreRetirement` (toggle in
+  InputsPanel) makes `resolveScenarioForRun` replace the scenario's starting balances with the
+  projection (savings + premiumBonds merge into `savings`; gilts flows; `giaGainFraction`
+  computed from the tracked basis) before `RetirementApp` calls `runForecast` — the engine is
+  never modified. Falls back to manual balances (with a warning) when the projection can't cover
+  the handoff month.
+- **Store** `src/store/preRetirementStore.ts`: mirrors the others (localStorage cache
+  `retirement-forecast:preretirement`, single 400ms debounced whole-document save, `pagehide`
+  flush, empty-DB seeding — seeding treats an all-zero document as unsaved).
+- **Persistence**: tables `PreRetirementState` (singleton), `PreRetirementPot`,
+  `PreRetirementOverride` in `server/db.ts`; pure `server/preRetirementMapping.ts` guarded by
+  `src/__tests__/preRetirementMapping.test.ts`; repo `server/preRetirementRepo.ts`; routes
+  `GET/PUT /api/preretirement` (whole-document). The backup envelope has an optional
+  `preRetirement` field — old backups leave the module untouched. Engine tests live in
+  `src/__tests__/preRetirementProject.test.ts`.
+- The expense store's `addMonthsUntil(untilKey)` bulk-creates months to the retirement handoff
+  (chaining start balances); the module's warn-banner offers it when months are missing.
+
 ## Monthly expense tracker
 
 A separate, **global** feature (deliberately *not* per-scenario: it records actuals about the real
@@ -88,7 +141,9 @@ forecast:
   when the month is created — its lines are then overridden/added/removed freely without touching
   the standard list or other months. Per expense line: `amount` (expected) and `paid` (actual so
   far). Per month: `startBalance` and a nullable `currentBalance` (the balance at the bank "now").
-  `migrateExpenseData` in `src/model/migrate.ts` backfills old saves.
+  Every template and month line also carries a nullable `accountId` tagging it to one of the 12
+  shared investment accounts (see "Pre-retirement forecast") — expense = contribution into it,
+  income = withdrawal from it. `migrateExpenseData` in `src/model/migrate.ts` backfills old saves.
 - **Calc** `src/expenses/calc.ts` (pure): `summariseMonth` reproduces the spreadsheet's numbers —
   totals for Amount/Paid/To Pay, `totalAvailable` (start balance + income, the sheet's income-side
   SUM), `headroom` = expected end balance (the sheet's "Balance To Reach 0") and `predicted`
@@ -107,7 +162,10 @@ forecast:
 ## Persistence (SQL Server + local API)
 
 - **The database is the source of truth.** `server/` is an Express API (`npm run server`, port
-  5174; Vite proxies `/api` there) that owns a local SQL Server database `RetirementForecast`.
+  5174; Vite proxies `/api` there) that owns a local SQL Server database — `RetirementForecast`
+  by default, overridable via the `RETIREMENT_DB_NAME` env var. Vitest pins
+  `RETIREMENT_DB_NAME=RetirementForecastTest` (see `vite.config.ts`), so any test that touches
+  the database bootstraps and uses the test database, never the production one.
   `server/db.ts` bootstraps the database and tables idempotently on first use. Credentials come
   from `containerSecrets/sql-creds.json` (gitignored); they are read only by the server process,
   never the frontend.
@@ -130,6 +188,9 @@ forecast:
   locally. On startup with an **empty** database, localStorage scenarios are migrated up (this is
   the upgrade path for pre-SQL installs — don't leave test data in the DB, it would shadow a
   user's browser data).
+- **`scripts/backup-db.sh`** (Git Bash) exports the whole production database as a timestamped
+  `.bacpac` to the Google Drive financial vault via `sqlpackage` over shared memory
+  (`lpc:localhost`).
 - **JSON import/export = database backup/restore.** `GET /api/export` returns a versioned
   envelope (`format: "retirement-forecast-backup"`, `scenarios[]`, `activeId`); `POST /api/import`
   replaces the whole database atomically. The UI's Import button also accepts legacy
