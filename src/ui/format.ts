@@ -14,8 +14,8 @@ export function money(x: number, dp = 0): string {
   return (dp === 0 ? gbp0 : gbp2).format(x);
 }
 
-export function pct(x: number): string {
-  return `${(x * 100).toFixed(2)}%`;
+export function pct(x: number, dp = 2): string {
+  return `${(x * 100).toFixed(dp)}%`;
 }
 
 export function shortDate(iso: string): string {

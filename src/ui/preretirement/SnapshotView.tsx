@@ -1,11 +1,11 @@
 import { useState } from "react";
-import type { InvestmentAccount } from "../../model/preRetirementTypes";
-import { PERSON_IDS, PRE_ACCOUNT_KIND_LABELS } from "../../model/preRetirementTypes";
+import type { InvestmentAccount, PreAccountKind } from "../../model/preRetirementTypes";
+import { PERSON_IDS, PRE_ACCOUNT_KINDS, PRE_ACCOUNT_KIND_LABELS } from "../../model/preRetirementTypes";
 import type { PreRetirementResult } from "../../preretirement/project";
 import { balancesAt } from "../../preretirement/project";
 import { useStore } from "../../store/scenarioStore";
 import { monthLabel } from "../../expenses/calc";
-import { money } from "../format";
+import { money, pct } from "../format";
 
 function toIso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -30,6 +30,22 @@ export function SnapshotView({
   const personTotal = (p: (typeof PERSON_IDS)[number]) =>
     personAccounts(p).reduce((s, a) => s + value(a.id), 0);
   const netWorth = PERSON_IDS.reduce((s, p) => s + personTotal(p), 0);
+  const share = (part: number, whole: number) => (whole > 0 ? pct(part / whole, 1) : "—");
+
+  const kindTotals = (accts: InvestmentAccount[]) => {
+    const totals = new Map<PreAccountKind, number>();
+    for (const a of accts) totals.set(a.kind, (totals.get(a.kind) ?? 0) + value(a.id));
+    return PRE_ACCOUNT_KINDS.filter((k) => totals.has(k)).map((k) => ({ kind: k, total: totals.get(k)! }));
+  };
+  const categoryGroups: { key: string; title: string; color?: string; accounts: InvestmentAccount[] }[] = [
+    ...PERSON_IDS.map((p) => ({
+      key: p,
+      title: `${scenario.people[p].name} by category`,
+      color: p === "nick" ? "var(--nick)" : "var(--tracy)",
+      accounts: personAccounts(p),
+    })),
+    { key: "both", title: "Both by category", accounts },
+  ];
 
   const first = result.months[0];
   const last = result.months[result.months.length - 1];
@@ -59,9 +75,45 @@ export function SnapshotView({
         {PERSON_IDS.map((p) => (
           <div className="box" key={p}>
             <div className="v">{money(personTotal(p))}</div>
-            <div className="l">{scenario.people[p].name} total</div>
+            <div className="l">
+              {scenario.people[p].name} total · {share(personTotal(p), netWorth)}
+            </div>
           </div>
         ))}
+      </div>
+
+      <div
+        className="grid-2"
+        style={{ gridTemplateColumns: "repeat(3, 1fr)", alignItems: "start", gap: 18, maxWidth: 1000, marginBottom: 18 }}
+      >
+        {categoryGroups.map((g) => {
+          const groupTotal = g.accounts.reduce((s, a) => s + value(a.id), 0);
+          return (
+            <div className="card" key={g.key}>
+              <h2 style={g.color ? { color: g.color } : undefined}>{g.title}</h2>
+              <table className="fit zebra">
+                <tbody>
+                  {kindTotals(g.accounts).map((row) => (
+                    <tr key={row.kind}>
+                      <td className="label">{PRE_ACCOUNT_KIND_LABELS[row.kind]}</td>
+                      <td style={{ textAlign: "right" }}>{money(row.total)}</td>
+                      <td className="muted" style={{ textAlign: "right" }}>
+                        {share(row.total, groupTotal)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <th className="label">Total</th>
+                    <th style={{ textAlign: "right" }}>{money(groupTotal)}</th>
+                    <th />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          );
+        })}
       </div>
 
       <div className="grid-2" style={{ alignItems: "start", gap: 18, maxWidth: 1000 }}>
@@ -77,6 +129,9 @@ export function SnapshotView({
                       <span className="pill">{PRE_ACCOUNT_KIND_LABELS[a.kind]}</span>
                     </td>
                     <td style={{ textAlign: "right" }}>{money(value(a.id))}</td>
+                    <td className="muted" style={{ textAlign: "right" }}>
+                      {share(value(a.id), personTotal(p))}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -86,6 +141,7 @@ export function SnapshotView({
                     Total
                   </th>
                   <th style={{ textAlign: "right" }}>{money(personTotal(p))}</th>
+                  <th />
                 </tr>
               </tfoot>
             </table>
