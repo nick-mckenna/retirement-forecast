@@ -67,9 +67,35 @@ input[type="number"] {
   width: 120px;
 }
 
+/* Top-level module switcher (Retirement forecast | Monthly expenses | …). */
+.module-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 24px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.module-title h1 {
+  font-size: 16px;
+  margin: 0;
+  white-space: nowrap;
+}
+.module-title .muted {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.module-tabs {
+  margin-bottom: 0;
+}
+
 .app {
   display: flex;
-  min-height: 100vh;
+  min-height: calc(100vh - 56px);
 }
 .sidebar {
   width: 360px;
@@ -78,9 +104,9 @@ input[type="number"] {
   border-right: 1px solid var(--border);
   padding: 16px;
   overflow-y: auto;
-  height: 100vh;
+  height: calc(100vh - 56px);
   position: sticky;
-  top: 0;
+  top: 56px;
 }
 .main {
   flex: 1;
@@ -165,6 +191,38 @@ th {
   position: sticky;
   top: 0;
   z-index: 2;
+}
+/* Totals rows: header styling without the sticky-to-top behaviour. */
+tfoot th {
+  position: static;
+  color: var(--text);
+}
+
+/* Data-entry grids (expense tracker): hug their content instead of filling
+   the card, and stripe alternate rows for readability. Inputs go transparent
+   so the stripe shows through; focus restores a solid background for typing. */
+table.fit {
+  width: auto;
+}
+table.zebra tbody tr:nth-child(even) td {
+  background: var(--panel-2);
+}
+table.zebra tbody tr:hover td {
+  background: #24354a;
+}
+table.zebra input {
+  background: transparent;
+  border-color: transparent;
+}
+table.zebra input:hover {
+  border-color: var(--border);
+}
+table.zebra input:focus {
+  background: var(--panel);
+  border-color: var(--accent);
+}
+table.zebra input[type="number"] {
+  text-align: right;
 }
 td.label,
 th.label {

@@ -2,8 +2,10 @@ import { useRef } from "react";
 import type { Scenario } from "../model/types";
 import type { SimResult } from "../engine/simulate";
 import { useStore } from "../store/scenarioStore";
+import { applyRestoredExpenses, useExpenseStore } from "../store/expenseStore";
 import { exportToExcel } from "../export/excelExport";
 import { api, BACKUP_FORMAT, type BackupFile } from "../api/client";
+import { DbChip } from "./DbChip";
 
 function download(data: unknown, filename: string): void {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -32,6 +34,7 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
         exportedAt: new Date().toISOString(),
         activeId: store.activeId,
         scenarios: store.scenarios,
+        expenses: useExpenseStore.getState().data,
       };
       download(backup, filename);
     }
@@ -49,10 +52,13 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
           }
           const ok = confirm(
             `Restore "${file.name}"?\n\nThis replaces ALL ${store.scenarios.length} scenario(s) ` +
-              `in the database with the ${parsed.scenarios.length} scenario(s) from the backup.`,
+              `in the database with the ${parsed.scenarios.length} scenario(s) from the backup` +
+              (parsed.expenses ? ", plus the monthly expense tracker data" : "") +
+              `.`,
           );
           if (!ok) return;
           const where = await store.restoreBackup(parsed);
+          await applyRestoredExpenses(parsed.expenses, where);
           if (where === "browser-only") {
             alert("Database not reachable — the backup was restored to browser storage only.");
           }
@@ -68,13 +74,6 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
     };
     reader.readAsText(file);
   };
-
-  const db =
-    dbStatus === "online"
-      ? { color: "#3fb950", text: "● SQL Server", title: "Data is being saved to your local SQL Server database" }
-      : dbStatus === "offline"
-        ? { color: "#f85149", text: "○ DB offline", title: "Database unreachable — changes stay in this browser until it is back" }
-        : { color: "#8b949e", text: "… connecting", title: "Connecting to the forecast database" };
 
   return (
     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
@@ -96,9 +95,7 @@ export function ScenarioBar({ scenario, result }: { scenario: Scenario; result: 
         Delete
       </button>
       <button onClick={() => store.resetActiveToDefault()}>Reset to base case</button>
-      <span style={{ fontSize: 12, color: db.color, whiteSpace: "nowrap" }} title={db.title}>
-        {db.text}
-      </span>
+      <DbChip status={dbStatus} />
       <span style={{ flex: 1 }} />
       <button onClick={() => void exportJson()} title="Download every scenario in the database as a JSON backup">
         Export JSON

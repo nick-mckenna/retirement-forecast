@@ -22,13 +22,21 @@ There is no linter configured; `tsc --noEmit` is the type gate. Tests live in `s
 
 ## What this is
 
-A **local-first** SPA (React + TS + Vite) plus a small local persistence API that models a UK
-couple's retirement drawdown. It reproduces the original `NewForecast.xlsx` (kept in the repo root
-and used as the golden reference for tests), fills in a full UK tax calculation, and proposes a
-tax-aware buy/sell strategy. All state is a plain-data `Scenario` object persisted to a local SQL
-Server database (see "Persistence" below); the browser's `localStorage` is only a cache/offline
-fallback. The only network I/O is the app ↔ local API on 127.0.0.1. `NewForecast.xlsx` is a data
-reference only — never a build input.
+A **local-first** SPA (React + TS + Vite) plus a small local persistence API, growing into a small
+household-finance suite. `src/ui/App.tsx` is a thin shell with a top-level **module switcher**;
+there are currently two modules (pre-retirement forecasting is planned as a third):
+
+1. **Retirement forecast** (`src/ui/RetirementApp.tsx` and most of `src/`) — models a UK couple's
+   retirement drawdown. It reproduces the original `NewForecast.xlsx` (kept in the repo root and
+   used as the golden reference for tests), fills in a full UK tax calculation, and proposes a
+   tax-aware buy/sell strategy. All state is a plain-data `Scenario` object.
+2. **Monthly expenses** (`src/ui/expenses/`, see "Monthly expense tracker" below) — reproduces
+   `Expenditure2026.xlsx` (also in the repo root, golden reference for its tests): tracks the joint
+   current account month by month so it never drops below zero.
+
+Everything is persisted to a local SQL Server database (see "Persistence" below); the browser's
+`localStorage` is only a cache/offline fallback. The only network I/O is the app ↔ local API on
+127.0.0.1. The `.xlsx` files are data references only — never build inputs.
 
 ## Architecture — the data flow
 
@@ -67,6 +75,34 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   allowance); `cgt.ts` (gilts are intentionally CGT-exempt and must never be passed to it);
   `statePension.ts`; `taxParams.ts` holds editable per-year thresholds (2025/26 baseline, frozen to
   2028 then uprated with inflation via `projectTaxParams`/`resolveTaxParams`).
+
+## Monthly expense tracker
+
+A separate, **global** feature (deliberately *not* per-scenario: it records actuals about the real
+joint account, so scenario duplicate/delete must never fork or destroy it). Same layering as the
+forecast:
+
+- **Model** `src/model/expenseTypes.ts`: `ExpenseData = { templates, months }`. Templates are the
+  editable standard lists (expenses with a due day-of-month + default amount; income sources with a
+  default amount). Each `ExpenseMonth` (key `"yyyy-mm"`) is a **snapshot** of the templates taken
+  when the month is created — its lines are then overridden/added/removed freely without touching
+  the standard list or other months. Per expense line: `amount` (expected) and `paid` (actual so
+  far). Per month: `startBalance` and a nullable `currentBalance` (the balance at the bank "now").
+  `migrateExpenseData` in `src/model/migrate.ts` backfills old saves.
+- **Calc** `src/expenses/calc.ts` (pure): `summariseMonth` reproduces the spreadsheet's numbers —
+  totals for Amount/Paid/To Pay, `totalAvailable` (start balance + income, the sheet's income-side
+  SUM), `headroom` = expected end balance (the sheet's "Balance To Reach 0") and `predicted`
+  (= currentBalance − still-to-pay). `monthWarnings` flags months heading below zero. Golden tests
+  in `src/__tests__/expenseCalc.test.ts` use January/March 2026 numbers from `Expenditure2026.xlsx`.
+- **Store** `src/store/expenseStore.ts`: mirrors `scenarioStore` (localStorage cache
+  `retirement-forecast:expenses`, debounced 400ms write-through per month + for the template set,
+  `pagehide` flush, empty-DB seeding, own `dbStatus`).
+- **Persistence**: tables `ExpenseTemplate`, `ExpenseMonth`, `ExpenseMonthItem` (cascade) in
+  `server/db.ts`; pure mapping `server/expenseMapping.ts` guarded by
+  `src/__tests__/expenseMapping.test.ts` (round-trip + key coverage — extend both when adding a
+  field); repo `server/expenseRepo.ts`; routes `GET /api/expenses`, `PUT /api/expenses/templates`,
+  `PUT/DELETE /api/expenses/months/:key`. The backup envelope has an optional `expenses` field —
+  old backups without it leave the tracker untouched on import.
 
 ## Persistence (SQL Server + local API)
 

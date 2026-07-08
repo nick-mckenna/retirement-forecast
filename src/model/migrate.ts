@@ -1,4 +1,5 @@
 import type { Scenario } from "./types";
+import type { ExpenseData } from "./expenseTypes";
 import { defaultScenario } from "./defaults";
 
 /**
@@ -14,5 +15,21 @@ export function migrateScenario(s: Scenario): Scenario {
     taxParams: s.taxParams ?? [],
     overrides: s.overrides ?? [],
     purchases: s.purchases ?? [],
+  };
+}
+
+/** Same idea for the expense tracker: tolerate data saved by older versions. */
+export function migrateExpenseData(d: ExpenseData): ExpenseData {
+  return {
+    templates: {
+      expenses: d.templates?.expenses ?? [],
+      income: d.templates?.income ?? [],
+    },
+    months: (d.months ?? []).map((m) => ({
+      ...m,
+      currentBalance: m.currentBalance ?? null,
+      expenses: m.expenses ?? [],
+      income: m.income ?? [],
+    })),
   };
 }

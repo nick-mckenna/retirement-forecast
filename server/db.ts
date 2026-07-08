@@ -141,6 +141,41 @@ const SCHEMA: string[] = [
      id INT NOT NULL CONSTRAINT PK_AppState PRIMARY KEY CONSTRAINT CK_AppState_singleton CHECK (id = 1),
      activeScenarioId NVARCHAR(64) NULL
    )`,
+  // Monthly expense tracker (global, not per-scenario: these are actuals about
+  // the real joint account, so scenario operations must never touch them).
+  `IF OBJECT_ID(N'dbo.ExpenseTemplate', N'U') IS NULL
+   CREATE TABLE dbo.ExpenseTemplate (
+     kind NVARCHAR(10) NOT NULL,
+     itemId NVARCHAR(64) NOT NULL,
+     name NVARCHAR(200) NOT NULL,
+     dayOfMonth INT NULL,
+     amount FLOAT NOT NULL,
+     sortOrder INT NOT NULL CONSTRAINT DF_ExpenseTemplate_sortOrder DEFAULT 0,
+     CONSTRAINT PK_ExpenseTemplate PRIMARY KEY (kind, itemId),
+     CONSTRAINT CK_ExpenseTemplate_kind CHECK (kind IN (N'expense', N'income'))
+   )`,
+  `IF OBJECT_ID(N'dbo.ExpenseMonth', N'U') IS NULL
+   CREATE TABLE dbo.ExpenseMonth (
+     monthKey NVARCHAR(7) NOT NULL CONSTRAINT PK_ExpenseMonth PRIMARY KEY,
+     startBalance FLOAT NOT NULL,
+     currentBalance FLOAT NULL,
+     updatedAt DATETIME2 NOT NULL CONSTRAINT DF_ExpenseMonth_updatedAt DEFAULT SYSUTCDATETIME()
+   )`,
+  `IF OBJECT_ID(N'dbo.ExpenseMonthItem', N'U') IS NULL
+   CREATE TABLE dbo.ExpenseMonthItem (
+     monthKey NVARCHAR(7) NOT NULL
+       CONSTRAINT FK_ExpenseMonthItem_ExpenseMonth REFERENCES dbo.ExpenseMonth(monthKey) ON DELETE CASCADE,
+     kind NVARCHAR(10) NOT NULL,
+     itemId NVARCHAR(64) NOT NULL,
+     templateId NVARCHAR(64) NULL,
+     name NVARCHAR(200) NOT NULL,
+     dayOfMonth INT NULL,
+     amount FLOAT NOT NULL,
+     paid FLOAT NULL,
+     sortOrder INT NOT NULL CONSTRAINT DF_ExpenseMonthItem_sortOrder DEFAULT 0,
+     CONSTRAINT PK_ExpenseMonthItem PRIMARY KEY (monthKey, kind, itemId),
+     CONSTRAINT CK_ExpenseMonthItem_kind CHECK (kind IN (N'expense', N'income'))
+   )`,
 ];
 
 let poolPromise: Promise<sql.ConnectionPool> | null = null;

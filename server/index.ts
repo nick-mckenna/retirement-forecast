@@ -8,8 +8,17 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { DB_NAME, getPool } from "./db";
 import { deleteScenario, loadState, replaceAll, setActiveId, upsertScenario } from "./repo";
-import { migrateScenario } from "../src/model/migrate";
+import {
+  deleteMonth,
+  loadExpenseData,
+  replaceAllExpenses,
+  replaceTemplates,
+  upsertMonth,
+} from "./expenseRepo";
+import { migrateExpenseData, migrateScenario } from "../src/model/migrate";
+import { isMonthKey } from "../src/expenses/calc";
 import type { Scenario } from "../src/model/types";
+import type { ExpenseData, ExpenseMonth, ExpenseTemplates } from "../src/model/expenseTypes";
 
 const PORT = Number(process.env.PORT ?? 5174);
 
@@ -21,6 +30,8 @@ interface BackupFile {
   exportedAt?: string;
   activeId: string | null;
   scenarios: Scenario[];
+  /** Added later; absent from older backups (which then leave expenses untouched). */
+  expenses?: ExpenseData;
 }
 
 function assertScenario(body: unknown): Scenario {
@@ -29,6 +40,39 @@ function assertScenario(body: unknown): Scenario {
     throw Object.assign(new Error("Body is not a Scenario"), { status: 400 });
   }
   return migrateScenario(s);
+}
+
+function assertTemplates(body: unknown): ExpenseTemplates {
+  const t = body as ExpenseTemplates;
+  if (!t || !Array.isArray(t.expenses) || !Array.isArray(t.income)) {
+    throw Object.assign(new Error("Body is not an expense template set"), { status: 400 });
+  }
+  return t;
+}
+
+function assertExpenseMonth(body: unknown): ExpenseMonth {
+  const m = body as ExpenseMonth;
+  if (
+    !m ||
+    typeof m.key !== "string" ||
+    !isMonthKey(m.key) ||
+    typeof m.startBalance !== "number" ||
+    !Array.isArray(m.expenses) ||
+    !Array.isArray(m.income)
+  ) {
+    throw Object.assign(new Error("Body is not an expense month"), { status: 400 });
+  }
+  return m;
+}
+
+function assertExpenseData(body: unknown): ExpenseData {
+  const d = body as ExpenseData;
+  if (!d || !d.templates || !Array.isArray(d.months)) {
+    throw Object.assign(new Error("Body is not expense-tracker data"), { status: 400 });
+  }
+  assertTemplates(d.templates);
+  d.months.forEach(assertExpenseMonth);
+  return migrateExpenseData(d);
 }
 
 const app = express();
@@ -66,14 +110,46 @@ app.put("/api/active", async (req, res) => {
   res.status(204).end();
 });
 
+// ---- Monthly expense tracker (global data, independent of scenarios) ----
+
+app.get("/api/expenses", async (_req, res) => {
+  res.json(await loadExpenseData(await getPool()));
+});
+
+app.put("/api/expenses/templates", async (req, res) => {
+  const { templates } = req.body as { templates: unknown };
+  await replaceTemplates(await getPool(), assertTemplates(templates));
+  res.status(204).end();
+});
+
+app.put("/api/expenses/months/:key", async (req, res) => {
+  const { month } = req.body as { month: unknown };
+  const m = assertExpenseMonth(month);
+  if (m.key !== req.params.key) {
+    throw Object.assign(new Error("Month key does not match the URL"), { status: 400 });
+  }
+  await upsertMonth(await getPool(), m);
+  res.status(204).end();
+});
+
+app.delete("/api/expenses/months/:key", async (req, res) => {
+  if (!isMonthKey(req.params.key)) {
+    throw Object.assign(new Error("Not a month key (yyyy-mm)"), { status: 400 });
+  }
+  await deleteMonth(await getPool(), req.params.key);
+  res.status(204).end();
+});
+
 app.get("/api/export", async (_req, res) => {
-  const state = await loadState(await getPool());
+  const pool = await getPool();
+  const state = await loadState(pool);
   const backup: BackupFile = {
     format: BACKUP_FORMAT,
     version: 1,
     exportedAt: new Date().toISOString(),
     activeId: state.activeId,
     scenarios: state.scenarios,
+    expenses: await loadExpenseData(pool),
   };
   res.json(backup);
 });
@@ -86,6 +162,8 @@ app.post("/api/import", async (req, res) => {
   const scenarios = backup.scenarios.map(assertScenario);
   const pool = await getPool();
   await replaceAll(pool, { scenarios, activeId: backup.activeId ?? null });
+  // Older backups have no expense data; leave the tracker untouched for those.
+  if (backup.expenses) await replaceAllExpenses(pool, assertExpenseData(backup.expenses));
   res.json(await loadState(pool));
 });
 

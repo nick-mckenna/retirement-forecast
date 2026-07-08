@@ -2,6 +2,7 @@
 // SQL Server database. All calls go through the Vite /api proxy.
 
 import type { Scenario } from "../model/types";
+import type { ExpenseData, ExpenseMonth, ExpenseTemplates } from "../model/expenseTypes";
 
 export const BACKUP_FORMAT = "retirement-forecast-backup";
 
@@ -17,6 +18,8 @@ export interface BackupFile {
   exportedAt?: string;
   activeId: string | null;
   scenarios: Scenario[];
+  /** Added later; absent from older backups (which then leave expenses untouched). */
+  expenses?: ExpenseData;
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -53,4 +56,19 @@ export const api = {
   exportBackup: () => http<BackupFile>("/export"),
   importBackup: (backup: BackupFile) =>
     http<RemoteState>("/import", { method: "POST", body: JSON.stringify(backup) }),
+  expenses: () => http<ExpenseData>("/expenses"),
+  saveExpenseTemplates: (templates: ExpenseTemplates, keepalive = false) =>
+    http<void>("/expenses/templates", {
+      method: "PUT",
+      body: JSON.stringify({ templates }),
+      keepalive,
+    }),
+  saveExpenseMonth: (month: ExpenseMonth, keepalive = false) =>
+    http<void>(`/expenses/months/${encodeURIComponent(month.key)}`, {
+      method: "PUT",
+      body: JSON.stringify({ month }),
+      keepalive,
+    }),
+  deleteExpenseMonth: (key: string) =>
+    http<void>(`/expenses/months/${encodeURIComponent(key)}`, { method: "DELETE" }),
 };
