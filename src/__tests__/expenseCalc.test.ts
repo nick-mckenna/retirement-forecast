@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
-import type { ExpenseMonth } from "../model/expenseTypes";
+import type {
+  ExpenseData,
+  ExpenseMonth,
+  ExpenseTemplates,
+  MonthExpenseItem,
+} from "../model/expenseTypes";
 import { defaultExpenseData } from "../model/expenseTypes";
 import {
   addMonths,
+  applyTemplatesToFutureMonths,
+  applyTemplatesToMonth,
   createMonthFromTemplates,
   defaultMonthKey,
+  futureMonths,
   isMonthKey,
   monthKeysBetween,
   monthLabel,
@@ -160,5 +168,154 @@ describe("month keys", () => {
       createMonthFromTemplates(d.templates, "2026-01"),
     ];
     expect(nextMonthKey(d, "2026-07")).toBe("2026-03"); // after the latest, not the fallback
+  });
+});
+
+/** A deliberately tiny standard list so a resync is easy to read: expenses total
+ *  1,330 and income 2,200, so every month's headroom is its start balance + 870.
+ *  The figures are invented. */
+function sampleTemplates(): ExpenseTemplates {
+  return {
+    expenses: [
+      { id: "exp-rent", name: "Rent", day: 1, amount: 900, accountId: null },
+      { id: "exp-gym", name: "Gym", day: 5, amount: 30, accountId: null },
+      { id: "exp-isa", name: "ISA transfer", day: 28, amount: 400, accountId: "acc-isa" },
+    ],
+    income: [{ id: "inc-salary", name: "Salary", amount: 2200, accountId: null }],
+  };
+}
+
+function dataWith(keys: string[], templates: ExpenseTemplates): ExpenseData {
+  return { templates, months: keys.map((k) => createMonthFromTemplates(templates, k)) };
+}
+
+describe("future months", () => {
+  it("counts only the months after the current one", () => {
+    const d = dataWith(["2026-05", "2026-07", "2026-08", "2026-09"], sampleTemplates());
+    // The current month (2026-07) is history in progress, not a forecast.
+    expect(futureMonths(d, "2026-07").map((m) => m.key)).toEqual(["2026-08", "2026-09"]);
+    expect(futureMonths(d, "2026-12")).toHaveLength(0);
+  });
+});
+
+describe("pushing the standard items into one month", () => {
+  it("resets a hand-edited line to the standard item", () => {
+    const t = sampleTemplates();
+    const m = createMonthFromTemplates(t, "2026-09");
+    Object.assign(m.expenses[0], {
+      name: "Rent (renegotiated)",
+      day: 15,
+      amount: 5000,
+      accountId: "acc-wrong",
+    });
+    const rent = applyTemplatesToMonth(t, m).expenses.find((e) => e.templateId === "exp-rent")!;
+    expect(rent.amount).toBe(900);
+    expect(rent.name).toBe("Rent");
+    expect(rent.day).toBe(1);
+    expect(rent.accountId).toBeNull();
+  });
+
+  it("drops deleted items, adds new ones, and keeps one-offs last", () => {
+    const t = sampleTemplates();
+    const m = createMonthFromTemplates(t, "2026-09");
+    m.expenses.push({
+      id: "e1712",
+      templateId: null,
+      name: "Car repair",
+      day: 9,
+      amount: 320,
+      paid: 0,
+      accountId: null,
+    });
+    // Gym cancelled, vet plan started.
+    const changed: ExpenseTemplates = {
+      expenses: [
+        t.expenses[0],
+        t.expenses[2],
+        { id: "exp-vet", name: "Vet plan", day: 20, amount: 25, accountId: null },
+      ],
+      income: t.income,
+    };
+    const out = applyTemplatesToMonth(changed, m);
+    // Standard items in the standard order, then the month's own one-off.
+    expect(out.expenses.map((e) => e.name)).toEqual(["Rent", "ISA transfer", "Vet plan", "Car repair"]);
+    expect(out.expenses.find((e) => e.name === "Vet plan")!.paid).toBe(0);
+  });
+
+  it("treats a line saved before templateId existed as a one-off, not an orphan", () => {
+    const t = sampleTemplates();
+    const m = createMonthFromTemplates(t, "2026-09");
+    const legacy = { id: "old-1", name: "Legacy line", day: 3, amount: 12, paid: 0, accountId: null };
+    m.expenses.push(legacy as unknown as MonthExpenseItem);
+    expect(applyTemplatesToMonth(t, m).expenses.some((e) => e.name === "Legacy line")).toBe(true);
+  });
+
+  it("clamps paid to the new amount so 'to pay' can never go negative", () => {
+    const t = sampleTemplates();
+    const m = createMonthFromTemplates(t, "2026-09");
+    m.expenses[0].amount = 2000; // an invoice settled early, above the standard 900
+    m.expenses[0].paid = 2000;
+    m.expenses[1].paid = 10; // a genuine part-payment, below the standard 30
+    const out = applyTemplatesToMonth(t, m);
+    expect(out.expenses[0].paid).toBe(900);
+    expect(out.expenses[1].paid).toBe(10);
+    // Left at 2,000 this would report a negative to-pay and hide the warning.
+    expect(summariseMonth(out).totalToPay).toBeGreaterThanOrEqual(0);
+  });
+
+  it("leaves the month's own facts alone and never aliases the templates", () => {
+    const t = sampleTemplates();
+    const m = createMonthFromTemplates(t, "2026-09", 250);
+    m.currentBalance = 640;
+    const out = applyTemplatesToMonth(t, m);
+    expect(out.key).toBe("2026-09");
+    expect(out.startBalance).toBe(250);
+    expect(out.currentBalance).toBe(640);
+    expect(out.expenses.some((e) => (e as unknown) === (t.expenses[0] as unknown))).toBe(false);
+  });
+});
+
+describe("pushing the standard items into every future month", () => {
+  it("never rewrites the current month or the past", () => {
+    const t = sampleTemplates();
+    const d = dataWith(["2026-06", "2026-07", "2026-08"], t);
+    d.months[0].startBalance = 123;
+    for (const m of d.months) {
+      m.expenses[0].amount = 5000;
+      m.expenses[0].paid = 5000;
+    }
+    const out = applyTemplatesToFutureMonths(d, "2026-07");
+    expect(out[0].expenses[0].amount).toBe(5000); // June: what actually happened
+    expect(out[1].expenses[0].amount).toBe(5000); // July: the current month
+    expect(out[2].expenses[0].amount).toBe(900); // August: resynced
+    expect(out[0].startBalance).toBe(123); // the past is not re-chained either
+  });
+
+  it("re-chains future start balances from the month before", () => {
+    const t = sampleTemplates();
+    const d = dataWith(["2026-07", "2026-08", "2026-09"], t);
+    d.months[0].startBalance = 500;
+    const out = applyTemplatesToFutureMonths(d, "2026-07");
+    expect(out[0].startBalance).toBe(500); // the current month is the anchor
+    expect(out[1].startBalance).toBeCloseTo(1370, 2); // 500 + 870
+    expect(out[2].startBalance).toBeCloseTo(2240, 2); // 1370 + 870
+  });
+
+  it("keeps the opening balance of the first tracked month", () => {
+    const t = sampleTemplates();
+    const d = dataWith(["2026-08", "2026-09"], t); // the whole list lies ahead
+    d.months[0].startBalance = 1500;
+    const out = applyTemplatesToFutureMonths(d, "2026-07");
+    expect(out[0].startBalance).toBe(1500); // nothing to chain from — user-entered
+    expect(out[1].startBalance).toBeCloseTo(2370, 2); // 1500 + 870
+  });
+
+  it("is idempotent — a second push changes nothing", () => {
+    const t = sampleTemplates();
+    const d = dataWith(["2026-07", "2026-08", "2026-09"], t);
+    d.months[2].expenses[0].amount = 4321; // a hand-edit to wash out
+    const once = applyTemplatesToFutureMonths(d, "2026-07");
+    const twice = applyTemplatesToFutureMonths({ templates: t, months: once }, "2026-07");
+    expect(twice).toEqual(once);
   });
 });

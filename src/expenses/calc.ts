@@ -99,6 +99,85 @@ export function createMonthFromTemplates(
   };
 }
 
+/** Months lying strictly after `todayKey`, chronologically. The current month and
+ *  the past are the record of what actually happened, so only these are safe to
+ *  rewrite from the standard items. */
+export function futureMonths(d: ExpenseData, todayKey: string): ExpenseMonth[] {
+  return sortedMonths(d).filter((m) => m.key > todayKey);
+}
+
+/** Re-sync one month's lines to the standard items: every template-linked line
+ *  matches its template exactly and follows the template's order, lines whose
+ *  template has been deleted are dropped, and one-offs added to the month are
+ *  kept after them. The month's own facts survive — start balance, current
+ *  balance, and what has actually been paid. Reusing the deterministic
+ *  `${key}:${templateId}` id of `createMonthFromTemplates` makes this idempotent. */
+export function applyTemplatesToMonth(templates: ExpenseTemplates, m: ExpenseMonth): ExpenseMonth {
+  const paidFor = new Map(m.expenses.map((e) => [e.templateId, e.paid] as const));
+  return {
+    ...m,
+    expenses: [
+      ...templates.expenses.map(
+        (t): MonthExpenseItem => ({
+          id: `${m.key}:${t.id}`,
+          templateId: t.id,
+          name: t.name,
+          day: t.day,
+          amount: t.amount,
+          // Clamped, not carried: a paid figure left above the new amount would
+          // make summariseMonth report a negative "to pay", inflating the
+          // predicted balance and hiding the below-zero warning.
+          paid: Math.min(paidFor.get(t.id) ?? 0, t.amount),
+          accountId: t.accountId,
+        }),
+      ),
+      // A line with no templateId is a one-off added to this month; it is the
+      // month's own and survives. `== null` also covers saves from before
+      // templateId existed, which would otherwise look like an orphan and be dropped.
+      ...m.expenses.filter((e) => e.templateId == null),
+    ],
+    income: [
+      ...templates.income.map(
+        (t): MonthIncomeItem => ({
+          id: `${m.key}:${t.id}`,
+          templateId: t.id,
+          name: t.name,
+          amount: t.amount,
+          accountId: t.accountId,
+        }),
+      ),
+      ...m.income.filter((i) => i.templateId == null),
+    ],
+  };
+}
+
+/** The whole months list with every future month re-synced to the standard items
+ *  and its start balance re-chained from the month before — the same chaining the
+ *  store does when it creates a month. Single forward pass, so month N chains off
+ *  an already-resynced N−1; `prev` is the previous month in the list rather than
+ *  the previous *future* month, so the first future month chains off the current
+ *  (untouched) one. The result is sorted, which also hands back past months as new
+ *  objects — harmless, nothing depends on their identity. */
+export function applyTemplatesToFutureMonths(d: ExpenseData, todayKey: string): ExpenseMonth[] {
+  const out: ExpenseMonth[] = [];
+  for (const m of sortedMonths(d)) {
+    const prev = out[out.length - 1];
+    if (m.key <= todayKey) {
+      out.push(m);
+      continue;
+    }
+    const synced = applyTemplatesToMonth(d.templates, m);
+    // Only the very first month has nothing to chain from: it keeps its own start
+    // balance, which is the opening balance the user entered.
+    out.push(prev ? { ...synced, startBalance: round2(summariseMonth(prev).headroom) } : synced);
+  }
+  return out;
+}
+
+function round2(x: number): number {
+  return Math.round(x * 100) / 100;
+}
+
 // ---- Month-key helpers ("yyyy-mm") -----------------------------------------
 
 export const MONTH_KEY_RE = /^\d{4}-(0[1-9]|1[0-2])$/;

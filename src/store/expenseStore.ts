@@ -3,8 +3,10 @@ import type { ExpenseData, ExpenseMonth, ExpenseTemplates } from "../model/expen
 import { defaultExpenseData } from "../model/expenseTypes";
 import { migrateExpenseData } from "../model/migrate";
 import {
+  applyTemplatesToFutureMonths,
   createMonthFromTemplates,
   defaultMonthKey,
+  futureMonths,
   isMonthKey,
   monthKeyOf,
   nextMonthKey,
@@ -55,6 +57,10 @@ interface ExpenseStore {
    *  start balance from the previous month's expected end balance. Used by the
    *  pre-retirement module to cover its whole forecast range. */
   addMonthsUntil: (untilKey: string) => void;
+  /** Re-snapshot the standard items into every month after the current calendar
+   *  month, re-chaining their start balances. The current and past months are
+   *  the record of what actually happened and are never touched. */
+  applyTemplatesToFuture: () => void;
   deleteMonth: (key: string) => void;
 }
 
@@ -125,6 +131,22 @@ export const useExpenseStore = create<ExpenseStore>((set) => ({
       saveLocal(data);
       for (const m of added) void track(api.saveExpenseMonth(m));
       return { data, selectedKey: added[added.length - 1].key };
+    }),
+  applyTemplatesToFuture: () =>
+    set((st) => {
+      // One clock reading for both helpers — two would be a latent inconsistency.
+      const todayKey = monthKeyOf(new Date());
+      if (futureMonths(st.data, todayKey).length === 0) return st;
+      const months = applyTemplatesToFutureMonths(st.data, todayKey);
+      const data = { ...st.data, months };
+      saveLocal(data);
+      // Only the rewritten months go to the API; the list holds every month.
+      // selectedKey is untouched: none were added or removed.
+      for (const m of months.filter((m) => m.key > todayKey)) {
+        cancelMonthSave(m.key); // a queued save would write the same state — just avoid the duplicate PUT
+        void track(api.saveExpenseMonth(m));
+      }
+      return { data };
     }),
   deleteMonth: (key) =>
     set((st) => {

@@ -1,4 +1,5 @@
 import { useExpenseStore } from "../../store/expenseStore";
+import { futureMonths, monthKeyOf, monthLabel } from "../../expenses/calc";
 import { money } from "../format";
 import { AccountSelect } from "./AccountSelect";
 
@@ -14,24 +15,61 @@ function parseDay(v: string): number | null {
 }
 
 /** Editor for the standard monthly expenses and income sources. These are the
- *  master lists snapshotted into each newly created month; existing months
- *  keep their own copies, so edits here never rewrite history. */
+ *  master lists snapshotted into each newly created month. Existing months keep
+ *  their own copies, so edits here never rewrite history on their own — but the
+ *  "Update future months" button below pushes them into the months still ahead. */
 export function TemplatesView() {
   const templates = useExpenseStore((st) => st.data.templates);
+  // Subscribe to months, not data: `data` changes identity on every keystroke here.
+  const months = useExpenseStore((st) => st.data.months);
   const updateTemplates = useExpenseStore((st) => st.updateTemplates);
+  const applyTemplatesToFuture = useExpenseStore((st) => st.applyTemplatesToFuture);
 
   const totalExpenses = templates.expenses.reduce((s, e) => s + e.amount, 0);
   const totalIncome = templates.income.reduce((s, i) => s + i.amount, 0);
 
+  const upcoming = futureMonths({ templates, months }, monthKeyOf(new Date()));
+  const range =
+    upcoming.length === 0
+      ? ""
+      : upcoming.length === 1
+        ? monthLabel(upcoming[0].key)
+        : `${monthLabel(upcoming[0].key)} – ${monthLabel(upcoming[upcoming.length - 1].key)}`;
+
+  function pushToFuture(): void {
+    const ok = confirm(
+      `Update ${upcoming.length} future month${upcoming.length === 1 ? "" : "s"} (${range}) to match the standard items?\n\n` +
+        `Their standard lines will be replaced by the lists below: any amounts you changed by hand in those months are lost, items you deleted from a single month come back, and the lines are reordered to match. One-off lines you added to a month are kept, and the current and past months are not touched.\n\n` +
+        `Contributions tagged to an investment account feed the pre-retirement forecast, so this can also move your retirement forecast.`,
+    );
+    if (ok) applyTemplatesToFuture();
+  }
+
   return (
     <>
-      <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
-        The standard set of monthly expenses and income sources. New months start as a copy of
-        these lists; months already created are not affected by changes here. Leave the amount at 0
-        for items that vary every month (card bills) and fill them in on the month itself. Tag a
-        line with an investment account and every new month inherits the tag — that is how regular
-        contributions reach the pre-retirement forecast.
-      </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+          The standard set of monthly expenses and income sources. New months start as a copy of
+          these lists; months already created keep their own copies until you push these lists into
+          the future months with the button. Leave the amount at 0 for items that vary every month
+          (card bills) and fill them in on the month itself. Tag a line with an investment account
+          and every new month inherits the tag — that is how regular contributions reach the
+          pre-retirement forecast.
+        </p>
+        <button
+          className="primary"
+          style={{ whiteSpace: "nowrap" }}
+          disabled={upcoming.length === 0}
+          title={
+            upcoming.length === 0
+              ? "No months after this one are tracked yet — add some on the Months tab first."
+              : `Replace the standard lines in ${range} with the lists below.`
+          }
+          onClick={pushToFuture}
+        >
+          Update {upcoming.length} future month{upcoming.length === 1 ? "" : "s"}
+        </button>
+      </div>
       <div className="grid-2" style={{ alignItems: "start", gap: 18, maxWidth: 1400 }}>
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>

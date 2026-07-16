@@ -149,16 +149,24 @@ forecast:
   editable standard lists (expenses with a due day-of-month + default amount; income sources with a
   default amount). Each `ExpenseMonth` (key `"yyyy-mm"`) is a **snapshot** of the templates taken
   when the month is created — its lines are then overridden/added/removed freely without touching
-  the standard list or other months. Per expense line: `amount` (expected) and `paid` (actual so
-  far). Per month: `startBalance` and a nullable `currentBalance` (the balance at the bank "now").
+  the standard list or other months. The one route back the other way is the Standard items tab's
+  "Update future months" button (`applyTemplatesToFuture`), which re-snapshots the templates into
+  every month **after** the current calendar month and re-chains their start balances; the current
+  and past months are the record of what actually happened and are never rewritten. Per expense
+  line: `amount` (expected) and `paid` (actual so far). Per month: `startBalance` and a nullable `currentBalance` (the balance at the bank "now").
   Every template and month line also carries a nullable `accountId` tagging it to one of the
   shared investment accounts (see "Pre-retirement forecast") — expense = contribution into it,
   income = withdrawal from it. `migrateExpenseData` in `src/model/migrate.ts` backfills old saves.
 - **Calc** `src/expenses/calc.ts` (pure): `summariseMonth` reproduces the spreadsheet's numbers —
   totals for Amount/Paid/To Pay, `totalAvailable` (start balance + income, the sheet's income-side
   SUM), `headroom` = expected end balance (the sheet's "Balance To Reach 0") and `predicted`
-  (= currentBalance − still-to-pay). `monthWarnings` flags months heading below zero. Tests
-  in `src/__tests__/expenseCalc.test.ts` pin these formulas (which mirror the spreadsheet's)
+  (= currentBalance − still-to-pay). `monthWarnings` flags months heading below zero.
+  `createMonthFromTemplates` snapshots the standard items into a new month; `futureMonths(d,
+  todayKey)`, `applyTemplatesToMonth` and `applyTemplatesToFutureMonths(d, todayKey)` are the
+  push-to-future-months path (template lines in template order, orphans dropped, one-offs kept,
+  `paid` clamped to the new amount, start balances re-chained). Like every helper here they take
+  `todayKey` as a parameter rather than reading the clock — that is what keeps them testable.
+  Tests in `src/__tests__/expenseCalc.test.ts` pin these formulas (which mirror the spreadsheet's)
   with synthetic sample months.
 - **Store** `src/store/expenseStore.ts`: mirrors `scenarioStore` (localStorage cache
   `retirement-forecast:expenses`, debounced 400ms write-through per month + for the template set,

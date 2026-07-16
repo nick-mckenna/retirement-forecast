@@ -34,8 +34,19 @@ export function migrateExpenseData(d: ExpenseData): ExpenseData {
     months: (d.months ?? []).map((m) => ({
       ...m,
       currentBalance: m.currentBalance ?? null,
-      expenses: (m.expenses ?? []).map((e) => ({ ...e, accountId: e.accountId ?? null })),
-      income: (m.income ?? []).map((i) => ({ ...i, accountId: i.accountId ?? null })),
+      // templateId must be a real null, not undefined: it is what tells a one-off
+      // line from one snapshotted off a standard item, and an orphan (a line whose
+      // template has since gone) from a one-off that should be kept.
+      expenses: (m.expenses ?? []).map((e) => ({
+        ...e,
+        templateId: e.templateId ?? null,
+        accountId: e.accountId ?? null,
+      })),
+      income: (m.income ?? []).map((i) => ({
+        ...i,
+        templateId: i.templateId ?? null,
+        accountId: i.accountId ?? null,
+      })),
     })),
   };
 }
