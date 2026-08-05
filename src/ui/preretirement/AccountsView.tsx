@@ -3,20 +3,13 @@ import type { PreAccountKind } from "../../model/preRetirementTypes";
 import { PRE_ACCOUNT_KINDS, PRE_ACCOUNT_KIND_LABELS } from "../../model/preRetirementTypes";
 import { usePreRetirementStore } from "../../store/preRetirementStore";
 import type { BalanceOverride } from "../../model/preRetirementTypes";
-import { latestOverride } from "../../preretirement/project";
-import { daysInMonth, isMonthKey, monthKeyOf } from "../../expenses/calc";
+import { latestOverride, overrideDateIso } from "../../preretirement/project";
+import { isMonthKey, monthKeyOf } from "../../expenses/calc";
 import { pct } from "../format";
 
 function parseAmount(v: string): number {
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : 0;
-}
-
-/** "yyyy-mm-dd" for the date input; a null day (legacy end-of-month record)
- *  shows as the month's last day, which means the same thing. */
-function overrideDateIso(o: BalanceOverride): string {
-  const dim = daysInMonth(o.monthKey);
-  return `${o.monthKey}-${String(Math.min(o.day ?? dim, dim)).padStart(2, "0")}`;
 }
 
 /** The account registry (real, named accounts), opening balances and each

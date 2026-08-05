@@ -363,6 +363,58 @@ tbody tr.selected td:first-child {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* Small "i" button and the explanation it toggles (see ui/InfoIcon.tsx). */
+.info {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+button.info-btn {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+button.info-btn:hover,
+button.info-btn[aria-expanded="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.info-pop {
+  position: absolute;
+  top: 22px;
+  left: -10px;
+  z-index: 30;
+  width: 330px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  cursor: default;
+}
+.info-pop p {
+  margin: 0 0 6px;
+}
+.info-pop p:last-child {
+  margin-bottom: 0;
+}
 .warn-banner {
   background: #3a2a12;
   border: 1px solid var(--warn);

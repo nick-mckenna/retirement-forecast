@@ -7,7 +7,9 @@ import { defaultScenario } from "../model/defaults";
 import { migratePreRetirementData } from "../model/migrate";
 import {
   balancesAtDate,
+  latestActualTotal,
   latestOverride,
+  overrideDateIso,
   projectAccounts,
   ratesForKinds,
   type KindRates,
@@ -310,6 +312,60 @@ describe("latestOverride", () => {
     d.overrides.push({ accountId: "isa1", monthKey: "2026-08", day: null, value: 4 });
     expect(latestOverride(d, "isa1")?.value).toBe(4); // later entry wins the tie
     expect(latestOverride(d, "ghost")).toBeNull();
+  });
+});
+
+describe("latestActualTotal", () => {
+  it("sums each account's latest recorded balance, with no growth or flows", () => {
+    const d = data([
+      account({ id: "isa1", kind: "isa", openingBalance: 10000 }),
+      account({ id: "sav1", openingBalance: 5000 }),
+    ]);
+    d.overrides = [
+      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 11000 },
+      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 12000 },
+      { accountId: "sav1", monthKey: "2026-08", day: null, value: 4500 },
+    ];
+    expect(latestActualTotal(d)).toEqual({
+      total: 16500, // 12000 + 4500 — the latest record each, nothing projected
+      latestDate: "2026-08-31", // sav1's end-of-August record is the most recent
+      recordedCount: 2,
+      openingCount: 0,
+    });
+  });
+
+  it("falls back to the opening balance for accounts with no record", () => {
+    const d = data([
+      account({ id: "isa1", kind: "isa", openingBalance: 10000 }),
+      account({ id: "sav1", openingBalance: 5000 }),
+    ]);
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: 20, value: 12000 }];
+    expect(latestActualTotal(d)).toEqual({
+      total: 17000, // 12000 recorded + 5000 opening
+      latestDate: "2026-08-20",
+      recordedCount: 1,
+      openingCount: 1,
+    });
+    expect(latestActualTotal(data([]))).toEqual({
+      total: 0,
+      latestDate: null,
+      recordedCount: 0,
+      openingCount: 0,
+    });
+  });
+
+  it("counts a duplicated account id once, like the engine", () => {
+    const d = data([account({ id: "sav1", openingBalance: 5000 }), account({ id: "sav1", openingBalance: 9000 })]);
+    expect(latestActualTotal(d).total).toBe(5000);
+    expect(latestActualTotal(d).openingCount).toBe(1);
+  });
+});
+
+describe("overrideDateIso", () => {
+  it("resolves a null day to the month end and clamps overlong days", () => {
+    expect(overrideDateIso({ monthKey: "2026-02", day: null })).toBe("2026-02-28");
+    expect(overrideDateIso({ monthKey: "2026-04", day: 31 })).toBe("2026-04-30");
+    expect(overrideDateIso({ monthKey: "2026-08", day: 5 })).toBe("2026-08-05");
   });
 });
 

@@ -312,6 +312,54 @@ export function latestOverride(data: PreRetirementData, accountId: string): Bala
   return best;
 }
 
+/** "yyyy-mm-dd" for a record's date — a null day means the end of the month,
+ *  and a day past the month's length clamps to its last day (as the engine
+ *  reads it). */
+export function overrideDateIso(o: { monthKey: string; day: number | null }): string {
+  const dim = daysInMonth(o.monthKey);
+  const day = Math.min(Math.max(o.day ?? dim, 1), dim);
+  return `${o.monthKey}-${String(day).padStart(2, "0")}`;
+}
+
+export interface LatestActualTotal {
+  /** Σ each account's latest user-entered figure. */
+  total: number;
+  /** "yyyy-mm-dd" of the most recent record in the total; null if there is none. */
+  latestDate: string | null;
+  /** Accounts whose figure came from a recorded actual balance. */
+  recordedCount: number;
+  /** Accounts with no record, falling back to their opening balance. */
+  openingCount: number;
+}
+
+/** Σ the latest balance figure the user has entered for each account, with no
+ *  projection at all: its most recent recorded actual balance (the Accounts
+ *  tab's "Latest actual balance" column), or its opening balance when it has
+ *  none. No growth, no tagged flows — so the figures can be dated differently
+ *  per account; `latestDate` is the most recent record contributing. */
+export function latestActualTotal(data: PreRetirementData): LatestActualTotal {
+  let total = 0;
+  let latestDate: string | null = null;
+  let recordedCount = 0;
+  let openingCount = 0;
+  const seen = new Set<string>();
+  for (const a of data.accounts) {
+    if (seen.has(a.id)) continue; // duplicate ids: first one wins, like the engine
+    seen.add(a.id);
+    const latest = latestOverride(data, a.id);
+    if (latest) {
+      total += latest.value;
+      recordedCount++;
+      const iso = overrideDateIso(latest);
+      if (latestDate == null || iso > latestDate) latestDate = iso;
+    } else {
+      total += a.openingBalance;
+      openingCount++;
+    }
+  }
+  return { total, latestDate, recordedCount, openingCount };
+}
+
 /** End-of-day balances per account id at an ISO date ("yyyy-mm-dd"), using
  *  the same intra-month model as recorded balances: growth compounds by the
  *  calendar-day fraction of the monthly rate, a contribution arrives at the

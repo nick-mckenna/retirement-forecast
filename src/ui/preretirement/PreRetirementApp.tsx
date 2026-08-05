@@ -2,11 +2,12 @@ import { useMemo, useState } from "react";
 import { usePreRetirementStore } from "../../store/preRetirementStore";
 import { useExpenseStore } from "../../store/expenseStore";
 import { useStore } from "../../store/scenarioStore";
-import { projectAccounts, ratesForKinds } from "../../preretirement/project";
+import { latestActualTotal, projectAccounts, ratesForKinds } from "../../preretirement/project";
 import { handoffMonthKey } from "../../preretirement/link";
 import { monthKeyOf, monthLabel } from "../../expenses/calc";
-import { money } from "../format";
+import { money, pct, shortDate } from "../format";
 import { DbChip } from "../DbChip";
+import { InfoIcon } from "../InfoIcon";
 import { ForecastView } from "./ForecastView";
 import { AccountsView } from "./AccountsView";
 import { SnapshotView } from "./SnapshotView";
@@ -43,6 +44,7 @@ export function PreRetirementApp() {
   const todayKey = monthKeyOf(new Date());
   const last = result.months[result.months.length - 1];
   const todayMonth = result.months.find((m) => m.key === todayKey);
+  const actual = useMemo(() => latestActualTotal(data), [data]);
 
   return (
     <main className="main">
@@ -79,8 +81,58 @@ export function PreRetirementApp() {
 
       <div className="kpi">
         <div className="box">
+          <div className="v">{money(actual.total)}</div>
+          <div className="l">
+            Latest actual balance{actual.latestDate ? ` (${shortDate(actual.latestDate)})` : ""}{" "}
+            <InfoIcon label="How “Latest actual balance” is calculated">
+              <p>
+                The balances you have <b>actually recorded</b>, added up — no forecasting at all: no
+                growth, no contributions, nothing projected forward.
+              </p>
+              <p>
+                For each account it takes the most recent figure in the Accounts tab's{" "}
+                <b>Latest actual balance</b> column.{" "}
+                {actual.openingCount > 0 ? (
+                  <>
+                    {actual.openingCount} of {actual.openingCount + actual.recordedCount} account(s)
+                    have no recorded balance yet, so their <b>opening balance</b> (start of{" "}
+                    {monthLabel(data.openingMonth)}) is used instead.
+                  </>
+                ) : (
+                  <>Every account has a recorded balance.</>
+                )}
+              </p>
+              <p className="muted">
+                Records are dated individually, so this can mix figures taken on different days
+                {actual.latestDate ? ` — the date shown is the most recent of them` : ""}.
+              </p>
+            </InfoIcon>
+          </div>
+        </div>
+        <div className="box">
           <div className="v">{todayMonth ? money(todayMonth.total) : "—"}</div>
-          <div className="l">Investments now ({monthLabel(todayKey)})</div>
+          <div className="l">
+            Investments forecast at end of {monthLabel(todayKey)}{" "}
+            <InfoIcon label="How the investments forecast is calculated">
+              <p>
+                The projected total across every account at the <b>end of {monthLabel(todayKey)}</b>{" "}
+                — the last month of the forecast that has already started.
+              </p>
+              <p>
+                Each account starts at its opening balance (start of {monthLabel(data.openingMonth)})
+                and is walked forward month by month: growth first — ISA / Pension / GIA{" "}
+                {pct(scenario.rates.investmentGrowth)}, Savings and Premium Bonds{" "}
+                {pct(scenario.rates.savingsInterest)}, Gilts {pct(scenario.rates.giltCoupon)} a year,
+                applied at the equivalent monthly rate — then the expense-tracker lines tagged to
+                that account (expenses in, income out, using the expected amount rather than what is
+                marked paid).
+              </p>
+              <p>
+                Wherever you have recorded an actual balance, the projection re-anchors to it and
+                compounds on from there: actuals up to your latest record, forecast after it.
+              </p>
+            </InfoIcon>
+          </div>
         </div>
         <div className="box">
           <div className="v">{last ? money(last.total) : "—"}</div>
