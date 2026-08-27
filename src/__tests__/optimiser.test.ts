@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { initState } from "../engine/state";
 import { makePlan, raiseCashMarginal } from "../strategy/drawdown";
-import { projectTaxParams } from "../tax/taxParams";
+import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
 import { defaultScenario } from "../model/defaults";
 import { runForecast, totalTaxOf } from "../strategy/optimiser";
 
 describe("marginal-cost optimiser (per-year)", () => {
   const scenario = defaultScenario();
-  const p = projectTaxParams(2028, 0.03);
+  const p = projectTaxParams(2028, DEFAULT_TAX_POLICY);
 
   it("raises approximately the requested amount", () => {
     const state = initState(scenario);

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { computeCGT } from "../tax/cgt";
-import { projectTaxParams } from "../tax/taxParams";
+import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
 
-const p = projectTaxParams(2028, 0.03); // CGT allowance 3,000; rates 18%/24%
+const p = projectTaxParams(2028, DEFAULT_TAX_POLICY); // CGT allowance 3,000; rates 18%/24%
 
 describe("capital gains tax", () => {
   it("applies the annual exempt amount", () => {

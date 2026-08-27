@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { computeIncomeTax } from "../tax/incomeTax";
-import { projectTaxParams } from "../tax/taxParams";
+import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
 
-const p = projectTaxParams(2028, 0.03); // frozen baseline: PA 12,570, basic band 37,700
+const p = projectTaxParams(2028, DEFAULT_TAX_POLICY); // frozen baseline: PA 12,570, basic band 37,700
 
 describe("income tax", () => {
   it("basic-rate employment/pension income", () => {

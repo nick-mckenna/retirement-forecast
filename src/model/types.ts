@@ -46,6 +46,19 @@ export interface Rates {
   giaDividendYield: number;
 }
 
+/**
+ * How the *default* (unedited) tax thresholds behave over time. Nothing rises while
+ * `uprating` is 0, which is the safe planning assumption: the personal allowance and
+ * the bands are frozen by policy until at least 2031, and the ISA and CGT allowances
+ * are being treated the same way. Raise `uprating` to model them catching up again.
+ */
+export interface TaxPolicy {
+  /** Cash allowances are frozen up to and including this tax year. */
+  freezeUntilYear: number;
+  /** Annual uprating applied to cash allowances after the freeze, e.g. 0.02. 0 = static. */
+  uprating: number;
+}
+
 export interface IncomeTargetConfig {
   /**
    * How the year-1 income target is set:
@@ -165,6 +178,8 @@ export interface Scenario {
     date: string;
     perPerson: Record<PersonId, { net: number; tax: number }>;
   };
+  /** Freeze/uprating assumption behind the projected default tax parameters. */
+  taxPolicy: TaxPolicy;
   /** Editable per-year tax parameters. Missing years fall back to the projected default. */
   taxParams: TaxYearParams[];
   overrides: Override[];

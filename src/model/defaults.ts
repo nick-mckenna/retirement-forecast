@@ -1,4 +1,5 @@
 import type { Scenario } from "./types";
+import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 
 /**
  * Default scenario — illustrative sample data only.
@@ -63,6 +64,7 @@ export function defaultScenario(): Scenario {
         tracy: { net: 78000, tax: 22000 },
       },
     },
+    taxPolicy: { ...DEFAULT_TAX_POLICY },
     taxParams: [],
     overrides: [],
     purchases: [],

@@ -1,9 +1,9 @@
-import type { TaxYearParams } from "../model/types";
+import type { TaxPolicy, TaxYearParams } from "../model/types";
 
 // Best-known England & Wales figures as a baseline (2025/26 basis). These are a
 // planning aid, NOT tax advice — every value is editable in the UI, and future-year
-// thresholds are assumptions. Thresholds are frozen until `freezeUntilYear`, then
-// assumed to rise with `uprating`.
+// thresholds are assumptions. Cash allowances are held flat up to the scenario's
+// `taxPolicy.freezeUntilYear`, then grown by `taxPolicy.uprating` (0 = never).
 export const BASE_TAX_PARAMS: Omit<TaxYearParams, "year"> = {
   personalAllowance: 12570,
   paTaperThreshold: 100000,
@@ -25,10 +25,14 @@ export const BASE_TAX_PARAMS: Omit<TaxYearParams, "year"> = {
   isaAllowance: 20000,
 };
 
-/** Thresholds are frozen (in cash terms) up to and including this tax year. */
-export const FREEZE_UNTIL_YEAR = 2028;
+/**
+ * Default policy: static thresholds. The personal allowance and the bands are frozen
+ * by government policy until at least 2031, and the ISA and CGT allowances are being
+ * treated the same way, so assuming no uprating is the safe planning position.
+ */
+export const DEFAULT_TAX_POLICY: TaxPolicy = { freezeUntilYear: 2031, uprating: 0 };
 
-/** Fields that are cash thresholds/allowances and should be uprated after the freeze. */
+/** Fields that are cash thresholds/allowances and so are uprated after the freeze. */
 const UPRATED_FIELDS: (keyof Omit<TaxYearParams, "year">)[] = [
   "personalAllowance",
   "basicRateBand",
@@ -41,11 +45,12 @@ const UPRATED_FIELDS: (keyof Omit<TaxYearParams, "year">)[] = [
   "isaAllowance",
 ];
 
-/** Project the default tax parameters for a given year using an uprating assumption. */
-export function projectTaxParams(year: number, uprating: number): TaxYearParams {
+/** Project the default tax parameters for a given year under a freeze/uprating policy. */
+export function projectTaxParams(year: number, policy: TaxPolicy): TaxYearParams {
   const p: TaxYearParams = { year, ...BASE_TAX_PARAMS };
-  if (year > FREEZE_UNTIL_YEAR) {
-    const factor = Math.pow(1 + uprating, year - FREEZE_UNTIL_YEAR);
+  const yearsAfterFreeze = year - policy.freezeUntilYear;
+  if (yearsAfterFreeze > 0 && policy.uprating !== 0) {
+    const factor = Math.pow(1 + policy.uprating, yearsAfterFreeze);
     for (const f of UPRATED_FIELDS) {
       // Round to whole pounds to keep the tables readable.
       p[f] = Math.round((BASE_TAX_PARAMS[f] as number) * factor);
@@ -60,8 +65,8 @@ export function projectTaxParams(year: number, uprating: number): TaxYearParams 
 export function resolveTaxParams(
   edited: TaxYearParams[],
   year: number,
-  uprating: number,
+  policy: TaxPolicy,
 ): TaxYearParams {
   const hit = edited.find((t) => t.year === year);
-  return hit ?? projectTaxParams(year, uprating);
+  return hit ?? projectTaxParams(year, policy);
 }
