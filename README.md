@@ -74,6 +74,7 @@ server/         Express + SQL Server persistence API (schema bootstrap, scenario
 ## Disclaimer
 
 This is a planning aid, **not tax or financial advice**. Default tax figures are
-best-known England & Wales values (frozen to 2028, then uprated with inflation) and
-future-year thresholds are assumptions — verify against HMRC and adjust in the Tax
-Parameters tab.
+best-known England & Wales values, held flat in cash terms by default (the personal
+allowance, the bands and the ISA and CGT allowances are frozen by policy until at least
+2031), and future-year thresholds are assumptions — verify against HMRC and adjust in the
+Tax Parameters tab, where the freeze year and any post-freeze uprating are also set.

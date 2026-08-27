@@ -183,7 +183,7 @@ export function simulate(scenario: Scenario): SimResult {
   // --- Annual loop over tax years ---
   for (let i = 0; i < income.years; i++) {
     const y = income.startYear + i;
-    const p = resolveTaxParams(scenario.taxParams, y, scenario.rates.inflation);
+    const p = resolveTaxParams(scenario.taxParams, y, scenario.taxPolicy);
     const yearStart = new Date(Date.UTC(y, 3, 6)); // 6 April y
     const accum = newAccum();
     const withdrawals: Withdrawal[] = [];
@@ -375,7 +375,8 @@ export function simulate(scenario: Scenario): SimResult {
       // extracted at low rates over time rather than bunched into higher-rate years later.
       const fraction = scenario.strategy.lifetimeFillFraction;
       if (mode === "lifetime" && fraction != null && fraction >= 0) {
-        // Resolve the fill target against this year's bands so it scales with uprating.
+        // Resolve the fill target against this year's bands, so it tracks them if the
+        // scenario's tax policy uprates them (frozen bands mean a fixed ceiling).
         const ceiling = p.personalAllowance + fraction * p.basicRateBand;
         const topUp = lifetimeTopUp(state, plans, ceiling);
         const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};

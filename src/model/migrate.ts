@@ -7,6 +7,7 @@ import {
   PRE_ACCOUNT_KIND_LABELS,
 } from "./preRetirementTypes";
 import { defaultScenario } from "./defaults";
+import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 
 /**
  * Backfill fields added in later versions so older saved scenarios (from the
@@ -18,6 +19,10 @@ export function migrateScenario(s: Scenario): Scenario {
     linkPreRetirement: s.linkPreRetirement ?? false,
     income: { ...s.income, mode: s.income.mode ?? "fixed", swrRate: s.income.swrRate ?? defaultScenario().income.swrRate },
     strategy: { ...s.strategy, taxMode: s.strategy.taxMode ?? "heuristic" },
+    taxPolicy: {
+      freezeUntilYear: s.taxPolicy?.freezeUntilYear ?? DEFAULT_TAX_POLICY.freezeUntilYear,
+      uprating: s.taxPolicy?.uprating ?? DEFAULT_TAX_POLICY.uprating,
+    },
     taxParams: s.taxParams ?? [],
     overrides: s.overrides ?? [],
     purchases: s.purchases ?? [],

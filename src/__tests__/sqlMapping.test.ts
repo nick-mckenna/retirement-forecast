@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Scenario } from "../model/types";
 import { defaultScenario } from "../model/defaults";
 import { migrateScenario } from "../model/migrate";
-import { projectTaxParams } from "../tax/taxParams";
+import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
 import { rowsToScenario, scenarioToRows, type ScenarioRows } from "../../server/mapping";
 
 /** A scenario with every optional/collection field populated. */
@@ -14,7 +14,11 @@ function fullScenario(): Scenario {
   s.income.mode = "swr";
   s.strategy.taxMode = "lifetime";
   s.strategy.lifetimeFillFraction = 0.65;
-  s.taxParams = [projectTaxParams(2029, 0.03), projectTaxParams(2028, 0.03)];
+  s.taxPolicy = { freezeUntilYear: 2035, uprating: 0.02 }; // non-default, so the columns are exercised
+  s.taxParams = [
+    { ...projectTaxParams(2029, s.taxPolicy), personalAllowance: 14000 },
+    projectTaxParams(2028, s.taxPolicy),
+  ];
   s.overrides = [
     { key: "2030:refill:nick:pension", amount: 12345.67 },
     { key: "2031:refill:tracy:isa", amount: 999 },
@@ -66,6 +70,7 @@ describe("SQL row mapping", () => {
     expect(keys(back.strategy)).toEqual(keys(s.strategy));
     expect(keys(back.income)).toEqual(keys(s.income));
     expect(keys(back.rates)).toEqual(keys(s.rates));
+    expect(keys(back.taxPolicy)).toEqual(keys(s.taxPolicy));
     expect(keys(back.people.nick)).toEqual(keys(s.people.nick));
     expect(keys(back.balances.nick)).toEqual(keys(s.balances.nick));
     expect(keys(back.taxParams[0])).toEqual(keys(s.taxParams[0]));
@@ -80,6 +85,7 @@ describe("SQL row mapping", () => {
     expect(back.purchases.map((p) => p.id)).toEqual(["p2", "p1"]);
     expect(back.overrides[0].amount).toBe(12345.67);
     expect(back.strategy.lifetimeFillFraction).toBe(0.65);
+    expect(back.taxPolicy).toEqual({ freezeUntilYear: 2035, uprating: 0.02 });
   });
 
   it("round-trips the pre-retirement link flag (BIT column forms)", () => {
@@ -95,5 +101,11 @@ describe("scenario migration", () => {
     const old = defaultScenario() as Partial<Scenario>;
     delete old.linkPreRetirement;
     expect(migrateScenario(old as Scenario).linkPreRetirement).toBe(false);
+  });
+
+  it("backfills taxPolicy on saves made before thresholds were frozen by default", () => {
+    const old = defaultScenario() as Partial<Scenario>;
+    delete old.taxPolicy;
+    expect(migrateScenario(old as Scenario).taxPolicy).toEqual(DEFAULT_TAX_POLICY);
   });
 });

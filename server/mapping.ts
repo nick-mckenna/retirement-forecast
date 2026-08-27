@@ -43,6 +43,8 @@ export interface ScenarioRow {
   giltLadderYears: SqlNum;
   taxMode: string;
   lifetimeFillFraction: SqlNum | null;
+  taxFreezeUntilYear: SqlNum;
+  taxUprating: SqlNum;
   finalIncomeDate: SqlDate;
   sortOrder: number;
 }
@@ -149,6 +151,8 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       giltLadderYears: s.strategy.giltLadderYears,
       taxMode: s.strategy.taxMode,
       lifetimeFillFraction: s.strategy.lifetimeFillFraction ?? null,
+      taxFreezeUntilYear: s.taxPolicy.freezeUntilYear,
+      taxUprating: s.taxPolicy.uprating,
       finalIncomeDate: s.finalIncome.date,
       sortOrder,
     },
@@ -248,6 +252,10 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
         nick: { net: num(nick.finalIncomeNet), tax: num(nick.finalIncomeTax) },
         tracy: { net: num(tracy.finalIncomeNet), tax: num(tracy.finalIncomeTax) },
       },
+    },
+    taxPolicy: {
+      freezeUntilYear: num(sc.taxFreezeUntilYear),
+      uprating: num(sc.taxUprating),
     },
     taxParams: [...r.taxParams]
       .sort((a, b) => num(a.year) - num(b.year))

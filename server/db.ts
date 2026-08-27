@@ -71,6 +71,8 @@ const SCHEMA: string[] = [
      taxMode NVARCHAR(10) NOT NULL,
      lifetimeFillFraction FLOAT NULL,
      finalIncomeDate DATE NOT NULL,
+     taxFreezeUntilYear INT NOT NULL CONSTRAINT DF_Scenario_taxFreezeUntilYear DEFAULT 2031,
+     taxUprating FLOAT NOT NULL CONSTRAINT DF_Scenario_taxUprating DEFAULT 0,
      linkPreRetirement BIT NOT NULL CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0,
      sortOrder INT NOT NULL CONSTRAINT DF_Scenario_sortOrder DEFAULT 0,
      updatedAt DATETIME2 NOT NULL CONSTRAINT DF_Scenario_updatedAt DEFAULT SYSUTCDATETIME()
@@ -226,6 +228,12 @@ const SCHEMA: string[] = [
   `IF COL_LENGTH(N'dbo.Scenario', N'linkPreRetirement') IS NULL
    ALTER TABLE dbo.Scenario ADD linkPreRetirement BIT NOT NULL
      CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'taxFreezeUntilYear') IS NULL
+   ALTER TABLE dbo.Scenario ADD taxFreezeUntilYear INT NOT NULL
+     CONSTRAINT DF_Scenario_taxFreezeUntilYear DEFAULT 2031`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'taxUprating') IS NULL
+   ALTER TABLE dbo.Scenario ADD taxUprating FLOAT NOT NULL
+     CONSTRAINT DF_Scenario_taxUprating DEFAULT 0`,
   `IF COL_LENGTH(N'dbo.ExpenseTemplate', N'accountId') IS NULL
    ALTER TABLE dbo.ExpenseTemplate ADD accountId NVARCHAR(64) NULL`,
   `IF COL_LENGTH(N'dbo.ExpenseMonthItem', N'accountId') IS NULL

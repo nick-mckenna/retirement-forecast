@@ -83,7 +83,10 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   (non-savings → savings → dividends, with PA taper, savings starting-rate band + PSA, dividend
   allowance); `cgt.ts` (gilts are intentionally CGT-exempt and must never be passed to it);
   `statePension.ts`; `taxParams.ts` holds editable per-year thresholds (2025/26 baseline, frozen to
-  2028 then uprated with inflation via `projectTaxParams`/`resolveTaxParams`).
+  `Scenario.taxPolicy.freezeUntilYear` then grown by `taxPolicy.uprating` via
+  `projectTaxParams`/`resolveTaxParams`). `DEFAULT_TAX_POLICY` is **2031 / 0%** — thresholds are
+  static in cash terms unless the user sets an uprating, matching the current freeze; the State
+  Pension is uprated separately (by `rates.inflation`, for the triple lock) and is unaffected.
 
 ## Pre-retirement forecast
 
