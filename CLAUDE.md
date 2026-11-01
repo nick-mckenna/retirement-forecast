@@ -194,7 +194,9 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   come from the active scenario's `Rates` via `ratesForKinds` (isa/pension/gia →
   `investmentGrowth`, savings/premiumBonds → `savingsInterest`, gilts → `giltCoupon`). It tracks
   each person's GIA cost basis for the CGT handoff and reports `missingMonthKeys` /
-  `unknownAccountIds` as warnings. `balancesAtDate` samples the end of any day (clamped to the
+  `unknownAccountIds` as warnings. Given the expense `templates` (the UI always passes them), a month
+  with no expense record is projected as a snapshot of the standard items (`assumedMonths`), so its
+  tagged contributions still count; without them it is zero flows. `balancesAtDate` samples the end of any day (clamped to the
   range, re-anchored at recorded balances up to that day) for the Snapshot tab.
 - **Handoff** `src/preretirement/link.ts`: the projection runs through `startDate`'s month and is
   sampled at the **end of `startDate`** (`sampleAtDate` → balances + GIA basis); the engine owns
@@ -214,8 +216,9 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   `GET/PUT /api/preretirement` (whole-document). The backup envelope has an optional
   `preRetirement` field — old backups leave the module untouched. Engine tests live in
   `src/__tests__/preRetirementProject.test.ts`.
-- The expense store's `addMonthsUntil(untilKey)` bulk-creates months to the retirement handoff
-  (chaining start balances); the module's warn-banner offers it when months are missing.
+- The expense store's `addMissingMonths(fromKey, untilKey)` (`fillMissingMonths`) creates every
+  untracked month in the range — gaps and months before the first included — carrying start
+  balances forward; the module's warn-banner offers it when months are missing.
 
 ## Monthly expense tracker
 
@@ -231,18 +234,25 @@ forecast:
   "Update future months" button (`applyTemplatesToFuture`), which re-snapshots the templates into
   every month **after** the current calendar month and re-chains their start balances; the current
   and past months are the record of what actually happened and are never rewritten. Per expense
-  line: `amount` (expected) and `paid` (actual so far). Per month: `startBalance` and a nullable `currentBalance` (the balance at the bank "now").
+  line: `amount` (expected) and `paid` (actual so far); per income line: `amount` and `received`.
+  Per month: `startBalance`, `startBalancePinned` and a nullable `currentBalance` (the balance at
+  the bank "now"). A pinned start balance was typed by the user and is kept; an unpinned one is
+  carried forward from the previous month's expected end and follows edits to it
+  (`rechainStartBalances`, run by the store on every month edit and delete, saving only the months
+  that moved; never across a gap). Old saves resolve pins with `resolveLegacyPins`: pinned unless
+  the stored value equals the carried one, so nothing typed is rewritten.
   Every template and month line also carries a nullable `accountId` tagging it to one of the
   shared investment accounts (see "Pre-retirement forecast") — expense = contribution into it,
   income = withdrawal from it. `migrateExpenseData` in `src/model/migrate.ts` backfills old saves.
 - **Calc** `src/expenses/calc.ts` (pure): `summariseMonth` reproduces the spreadsheet's numbers —
-  totals for Amount/Paid/To Pay, `totalAvailable` (start balance + income, the sheet's income-side
-  SUM), `headroom` = expected end balance (the sheet's "Balance To Reach 0") and `predicted`
-  (= currentBalance − still-to-pay). `monthWarnings` flags months heading below zero.
+  totals for Amount/Paid/To Pay (per line `max(0, amount − paid)`, `lineToPay`), Received/To come
+  (`lineToReceive`), `totalAvailable` (start balance + income, the sheet's income-side SUM),
+  `headroom` = expected end balance (the sheet's "Balance To Reach 0"; each line at the larger of
+  expected and actual) and `predicted` (= currentBalance − still to pay + still to come). `monthWarnings` flags months heading below zero.
   `createMonthFromTemplates` snapshots the standard items into a new month; `futureMonths(d,
   todayKey)`, `applyTemplatesToMonth` and `applyTemplatesToFutureMonths(d, todayKey)` are the
   push-to-future-months path (template lines in template order, orphans dropped, one-offs kept,
-  `paid` clamped to the new amount, start balances re-chained). Like every helper here they take
+  `paid`/`received` kept as facts, start balances re-chained). Like every helper here they take
   `todayKey` as a parameter rather than reading the clock — that is what keeps them testable.
   Tests in `src/__tests__/expenseCalc.test.ts` pin these formulas (which mirror the spreadsheet's)
   with synthetic sample months.

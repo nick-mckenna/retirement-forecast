@@ -18,7 +18,7 @@
 // which has no due day) is assumed to be inside the recorded balance.
 
 import type { Rates } from "../model/types";
-import type { ExpenseMonth } from "../model/expenseTypes";
+import type { ExpenseMonth, ExpenseTemplates } from "../model/expenseTypes";
 import type {
   BalanceOverride,
   InvestmentAccount,
@@ -26,7 +26,7 @@ import type {
   PreRetirementData,
 } from "../model/preRetirementTypes";
 import { annualToMonthly } from "../model/rates";
-import { clampDay, daysInMonth, monthKeysBetween, monthLabel } from "../expenses/calc";
+import { clampDay, createMonthFromTemplates, daysInMonth, monthKeysBetween, monthLabel } from "../expenses/calc";
 
 export interface AccountMonthCell {
   /** Balance at the start of the month (= previous month's end). */
@@ -68,8 +68,11 @@ export interface PreRetirementResult {
   /** Chronological, openingMonth .. endMonth inclusive; empty if endMonth < openingMonth. */
   months: ProjectionMonth[];
   warnings: string[];
-  /** Month keys in [openingMonth, endMonth] with no ExpenseMonth record (zero flows assumed). */
+  /** Month keys in [openingMonth, endMonth] with no ExpenseMonth record. */
   missingMonthKeys: string[];
+  /** What the projection assumed for those months: a snapshot of the standard items each (so
+   *  their tagged lines still contribute), or empty when no templates were given (zero flows). */
+  assumedMonths: ExpenseMonth[];
   /** accountId strings on tagged lines that match no registry account (treated as untagged). */
   unknownAccountIds: string[];
 }
@@ -163,19 +166,27 @@ export function dedupeAccounts(all: InvestmentAccount[]): {
 }
 
 /** The heart of the module: project every registry account from the opening
- *  month to `endMonth` (inclusive) using the given per-kind annual growth rates. */
+ *  month to `endMonth` (inclusive) using the given per-kind annual growth rates.
+ *  Months with no expense record use a snapshot of `templates` (the standard items) when
+ *  given — the best guess at what they will contribute — and zero flows otherwise. */
 export function projectAccounts(
   data: PreRetirementData,
   expenseMonths: ExpenseMonth[],
   rates: KindRates,
   endMonth: string,
+  templates?: ExpenseTemplates,
 ): PreRetirementResult {
   const warnings: string[] = [];
 
   const { accounts, duplicates } = dedupeAccounts(data.accounts);
   for (const a of duplicates) warnings.push(`Duplicate account id "${a.id}" — ignoring "${a.name}".`);
 
-  const { flows, unknownAccountIds } = monthlyFlows(expenseMonths, accounts);
+  const trackedKeys = new Set(expenseMonths.map((m) => m.key));
+  const range = endMonth < data.openingMonth ? [] : monthKeysBetween(data.openingMonth, endMonth);
+  const missingMonthKeys = range.filter((k) => !trackedKeys.has(k));
+  const assumedMonths = templates ? missingMonthKeys.map((k) => createMonthFromTemplates(templates, k)) : [];
+
+  const { flows, unknownAccountIds } = monthlyFlows([...expenseMonths, ...assumedMonths], accounts);
   if (unknownAccountIds.length > 0) {
     warnings.push(
       `Expense lines are tagged to unknown/deleted account(s), treated as untagged: ${unknownAccountIds.join(", ")}.`,
@@ -183,7 +194,7 @@ export function projectAccounts(
   }
 
   if (endMonth < data.openingMonth) {
-    return { accounts, months: [], warnings, missingMonthKeys: [], unknownAccountIds };
+    return { accounts, months: [], warnings, missingMonthKeys: [], assumedMonths: [], unknownAccountIds };
   }
 
   // Tagged flows before the opening month are already inside the opening
@@ -221,15 +232,13 @@ export function projectAccounts(
     }
   }
 
-  const trackedKeys = new Set(expenseMonths.map((m) => m.key));
-  const range = monthKeysBetween(data.openingMonth, endMonth);
-  const missingMonthKeys = range.filter((k) => !trackedKeys.has(k));
   if (missingMonthKeys.length > 0) {
     const first = monthLabel(missingMonthKeys[0]);
     const last = monthLabel(missingMonthKeys[missingMonthKeys.length - 1]);
     warnings.push(
       `${missingMonthKeys.length} month(s) in the forecast range have no expense record ` +
-        `(${missingMonthKeys.length === 1 ? first : `${first} … ${last}`}) — assumed zero contributions.`,
+        `(${missingMonthKeys.length === 1 ? first : `${first} … ${last}`}) — ` +
+        (templates ? "assumed the standard items' tagged contributions." : "assumed zero contributions."),
     );
   }
 
@@ -324,7 +333,7 @@ export function projectAccounts(
     );
   }
 
-  return { accounts, months, warnings, missingMonthKeys, unknownAccountIds };
+  return { accounts, months, warnings, missingMonthKeys, assumedMonths, unknownAccountIds };
 }
 
 /** The account's most recent actual-balance record — the one the Accounts UI
@@ -451,8 +460,9 @@ export function sampleAtDate(
   if (!month) return { balances, basis }; // unreachable: every month in the range is emitted
   const dim = daysInMonth(monthKey);
   const day = clampDay(Number(dateIso.slice(8, 10)) || null, monthKey);
+  // The month the projection actually used: the tracked one, else what it assumed.
   const { flows } = monthlyFlows(
-    expenseMonths.filter((m) => m.key === monthKey),
+    [...expenseMonths, ...result.assumedMonths].filter((m) => m.key === monthKey).slice(0, 1),
     result.accounts,
   );
   const monthFlows = flows.get(monthKey);

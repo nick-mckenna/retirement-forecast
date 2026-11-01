@@ -198,6 +198,7 @@ const SCHEMA: string[] = [
    CREATE TABLE dbo.ExpenseMonth (
      monthKey NVARCHAR(7) NOT NULL CONSTRAINT PK_ExpenseMonth PRIMARY KEY,
      startBalance FLOAT NOT NULL,
+     startBalancePinned BIT NULL, -- NULL = saved before pinning existed (resolved on load)
      currentBalance FLOAT NULL,
      updatedAt DATETIME2 NOT NULL CONSTRAINT DF_ExpenseMonth_updatedAt DEFAULT SYSUTCDATETIME()
    )`,
@@ -212,6 +213,7 @@ const SCHEMA: string[] = [
      dayOfMonth INT NULL,
      amount FLOAT NOT NULL,
      paid FLOAT NULL,
+     received FLOAT NULL, -- income lines; NULL = fully received (legacy)
      accountId NVARCHAR(64) NULL,
      sortOrder INT NOT NULL CONSTRAINT DF_ExpenseMonthItem_sortOrder DEFAULT 0,
      CONSTRAINT PK_ExpenseMonthItem PRIMARY KEY (monthKey, kind, itemId),
@@ -304,6 +306,10 @@ const SCHEMA: string[] = [
   ),
   `IF COL_LENGTH(N'dbo.ExpenseTemplate', N'accountId') IS NULL
    ALTER TABLE dbo.ExpenseTemplate ADD accountId NVARCHAR(64) NULL`,
+  `IF COL_LENGTH(N'dbo.ExpenseMonth', N'startBalancePinned') IS NULL
+   ALTER TABLE dbo.ExpenseMonth ADD startBalancePinned BIT NULL`,
+  `IF COL_LENGTH(N'dbo.ExpenseMonthItem', N'received') IS NULL
+   ALTER TABLE dbo.ExpenseMonthItem ADD received FLOAT NULL`,
   `IF COL_LENGTH(N'dbo.ExpenseMonthItem', N'accountId') IS NULL
    ALTER TABLE dbo.ExpenseMonthItem ADD accountId NVARCHAR(64) NULL`,
   `IF COL_LENGTH(N'dbo.PreRetirementAccountOverride', N'dayOfMonth') IS NULL

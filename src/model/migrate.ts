@@ -10,6 +10,7 @@ import { defaultScenario, SCHEMA_VERSION } from "./defaults";
 import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 import { firstModelledTaxYear, isIsoDate } from "../tax/taxYear";
 import { statutoryStatePensionAge } from "../tax/statePension";
+import { resolveLegacyPins } from "../expenses/calc";
 
 /**
  * Backfill fields added in later versions so older saved scenarios (from the
@@ -165,13 +166,11 @@ function migrateTaxV1(s: Scenario): { taxPolicy: TaxPolicy; taxParams: TaxYearOv
 
 /** Same idea for the expense tracker: tolerate data saved by older versions. */
 export function migrateExpenseData(d: ExpenseData): ExpenseData {
-  return {
-    templates: {
-      expenses: (d.templates?.expenses ?? []).map((t) => ({ ...t, accountId: t.accountId ?? null })),
-      income: (d.templates?.income ?? []).map((t) => ({ ...t, accountId: t.accountId ?? null })),
-    },
-    months: (d.months ?? []).map((m) => ({
+  // Months saved before start balances could be pinned: resolved against the chain below.
+  const legacyPin = new Set((d.months ?? []).filter((m) => m.startBalancePinned == null).map((m) => m.key));
+  const months = (d.months ?? []).map((m) => ({
       ...m,
+      startBalancePinned: m.startBalancePinned ?? false,
       currentBalance: m.currentBalance ?? null,
       // templateId must be a real null, not undefined: it is what tells a one-off
       // line from one snapshotted off a standard item, and an orphan (a line whose
@@ -184,9 +183,17 @@ export function migrateExpenseData(d: ExpenseData): ExpenseData {
       income: (m.income ?? []).map((i) => ({
         ...i,
         templateId: i.templateId ?? null,
+        // Lines saved before "received" existed count as fully received (today's figures).
+        received: i.received ?? i.amount,
         accountId: i.accountId ?? null,
       })),
-    })),
+    }));
+  return {
+    templates: {
+      expenses: (d.templates?.expenses ?? []).map((t) => ({ ...t, accountId: t.accountId ?? null })),
+      income: (d.templates?.income ?? []).map((t) => ({ ...t, accountId: t.accountId ?? null })),
+    },
+    months: resolveLegacyPins(months, (m) => legacyPin.has(m.key)),
   };
 }
 

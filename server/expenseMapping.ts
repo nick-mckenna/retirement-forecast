@@ -10,8 +10,14 @@ import type {
   ExpenseMonth,
   ExpenseTemplates,
 } from "../src/model/expenseTypes";
+import { resolveLegacyPins } from "../src/expenses/calc";
 
 type SqlNum = number | string;
+type SqlBool = boolean | number | string;
+
+function bool(v: SqlBool): boolean {
+  return v === true || v === 1 || v === "1" || v === "true";
+}
 
 export interface ExpenseTemplateRow {
   kind: "expense" | "income";
@@ -26,6 +32,8 @@ export interface ExpenseTemplateRow {
 export interface ExpenseMonthRow {
   monthKey: string;
   startBalance: SqlNum;
+  /** NULL for months saved before pinning existed (resolved on load). */
+  startBalancePinned: SqlBool | null;
   currentBalance: SqlNum | null;
 }
 
@@ -38,6 +46,8 @@ export interface ExpenseMonthItemRow {
   dayOfMonth: SqlNum | null;
   amount: SqlNum;
   paid: SqlNum | null;
+  /** Income lines only; NULL (legacy) = fully received. */
+  received: SqlNum | null;
   accountId: string | null;
   sortOrder: number;
 }
@@ -106,6 +116,7 @@ export function monthToRows(m: ExpenseMonth): { month: ExpenseMonthRow; items: E
     month: {
       monthKey: m.key,
       startBalance: m.startBalance,
+      startBalancePinned: m.startBalancePinned,
       currentBalance: m.currentBalance,
     },
     items: [
@@ -119,6 +130,7 @@ export function monthToRows(m: ExpenseMonth): { month: ExpenseMonthRow; items: E
           dayOfMonth: e.day,
           amount: e.amount,
           paid: e.paid,
+          received: null,
           accountId: e.accountId ?? null,
           sortOrder: i,
         }),
@@ -133,6 +145,7 @@ export function monthToRows(m: ExpenseMonth): { month: ExpenseMonthRow; items: E
           dayOfMonth: null,
           amount: inc.amount,
           paid: null,
+          received: inc.received,
           accountId: inc.accountId ?? null,
           sortOrder: i,
         }),
@@ -146,6 +159,7 @@ export function rowsToMonth(month: ExpenseMonthRow, items: ExpenseMonthItemRow[]
   return {
     key: month.monthKey,
     startBalance: num(month.startBalance),
+    startBalancePinned: month.startBalancePinned == null ? false : bool(month.startBalancePinned),
     currentBalance: numOrNull(month.currentBalance),
     expenses: sorted
       .filter((r) => r.kind === "expense")
@@ -165,6 +179,7 @@ export function rowsToMonth(month: ExpenseMonthRow, items: ExpenseMonthItemRow[]
         templateId: r.templateId ?? null,
         name: r.name,
         amount: num(r.amount),
+        received: r.received == null ? num(r.amount) : num(r.received),
         accountId: r.accountId ?? null,
       })),
   };
@@ -186,10 +201,10 @@ export function rowsToExpenseData(r: ExpenseRows): ExpenseData {
     list.push(item);
     itemsByMonth.set(item.monthKey, list);
   }
+  const legacy = new Set(r.months.filter((m) => m.startBalancePinned == null).map((m) => m.monthKey));
+  const months = r.months.map((m) => rowsToMonth(m, itemsByMonth.get(m.monthKey) ?? []));
   return {
     templates: rowsToTemplates(r.templates),
-    months: [...r.months]
-      .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
-      .map((m) => rowsToMonth(m, itemsByMonth.get(m.monthKey) ?? [])),
+    months: resolveLegacyPins(months, (m) => legacy.has(m.key)),
   };
 }

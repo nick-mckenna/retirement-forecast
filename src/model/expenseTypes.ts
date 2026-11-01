@@ -59,7 +59,10 @@ export interface MonthIncomeItem {
   id: string;
   templateId: string | null;
   name: string;
+  /** Expected amount this month. */
   amount: number;
+  /** Amount actually received so far this month (mirrors an expense line's `paid`). */
+  received: number;
   /** Investment account this money is withdrawn FROM (into the joint account), or null. */
   accountId: string | null;
 }
@@ -72,6 +75,9 @@ export interface ExpenseMonth {
   key: string;
   /** Joint current account balance carried into the month. */
   startBalance: number;
+  /** True when the user typed the start balance (a fact to keep); false when it is carried
+   *  forward from the previous month's expected end and should follow edits to that month. */
+  startBalancePinned: boolean;
   /** The account balance right now (user-entered mid-month); null until entered.
    *  Predicted month-end balance = currentBalance − what is still to pay. */
   currentBalance: number | null;

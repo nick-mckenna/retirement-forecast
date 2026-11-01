@@ -29,17 +29,19 @@ function fullExpenseData(): ExpenseData {
       {
         key: "2026-02",
         startBalance: 500,
+        startBalancePinned: false,
         currentBalance: null,
         expenses: [
           { id: "m2-council", templateId: "t-council", name: "Council Tax", day: 1, amount: 0, paid: 0, accountId: null },
         ],
         income: [
-          { id: "m2-salary", templateId: "t-salary", name: "Salary Nick", amount: 2450.75, accountId: null },
+          { id: "m2-salary", templateId: "t-salary", name: "Salary Nick", amount: 2450.75, received: 0, accountId: null },
         ],
       },
       {
         key: "2026-01",
         startBalance: 321.09,
+        startBalancePinned: true,
         currentBalance: 654.32,
         expenses: [
           { id: "m1-council", templateId: "t-council", name: "Council Tax", day: 1, amount: 210, paid: 210, accountId: null },
@@ -48,9 +50,9 @@ function fullExpenseData(): ExpenseData {
           { id: "m1-invest", templateId: "t-invest", name: "Savings / Investments", day: 30, amount: 2000, paid: 2000, accountId: "nick-isa" },
         ],
         income: [
-          { id: "m1-salary", templateId: "t-salary", name: "Salary Nick", amount: 2450.75, accountId: null },
-          { id: "m1-oneoff", templateId: null, name: "Tax refund", amount: 123.45, accountId: null },
-          { id: "m1-frompb", templateId: "t-frompb", name: "From Premium Bonds", amount: 1500, accountId: "tracy-premium-bonds" },
+          { id: "m1-salary", templateId: "t-salary", name: "Salary Nick", amount: 2450.75, received: 2450.75, accountId: null },
+          { id: "m1-oneoff", templateId: null, name: "Tax refund", amount: 123.45, received: 61.2, accountId: null },
+          { id: "m1-frompb", templateId: "t-frompb", name: "From Premium Bonds", amount: 1500, received: 0, accountId: "tracy-premium-bonds" },
         ],
       },
     ],
@@ -66,12 +68,15 @@ function simulateDbReadback(rows: ExpenseRows): ExpenseRows {
     months: rows.months.map((r) => ({
       ...r,
       startBalance: s(r.startBalance)!,
+      // BIT columns come back as booleans or 0/1 depending on the driver.
+      startBalancePinned: r.startBalancePinned == null ? null : r.startBalancePinned ? 1 : 0,
       currentBalance: s(r.currentBalance),
     })),
     items: rows.items.map((r) => ({
       ...r,
       amount: s(r.amount)!,
       paid: s(r.paid),
+      received: s(r.received),
       dayOfMonth: s(r.dayOfMonth),
     })),
   };
@@ -141,6 +146,21 @@ describe("expense data migration", () => {
     expect(d.months[0].expenses).toEqual([]);
     expect(d.months[0].income).toEqual([]);
     expect(d.months[0].currentBalance).toBeNull();
+    expect(d.months[0].startBalancePinned).toBe(true); // the first month is the user's opening balance
+  });
+
+  it("counts income saved before 'received' existed as fully received, and resolves pins", () => {
+    const old = {
+      templates: { expenses: [], income: [] },
+      months: [
+        { key: "2026-01", startBalance: 100, currentBalance: null, expenses: [], income: [{ id: "i", templateId: null, name: "Pay", amount: 900 }] },
+        { key: "2026-02", startBalance: 1000, currentBalance: null, expenses: [], income: [] }, // = 100 + 900: carried
+        { key: "2026-03", startBalance: 42, currentBalance: null, expenses: [], income: [] }, // typed
+      ],
+    } as unknown as ExpenseData;
+    const d = migrateExpenseData(old);
+    expect(d.months[0].income[0].received).toBe(900);
+    expect(d.months.map((m) => m.startBalancePinned)).toEqual([true, false, true]);
   });
 
   it("backfills accountId on pre-tagging saves", () => {
@@ -164,5 +184,19 @@ describe("expense data migration", () => {
     expect(d.templates.income[0].accountId).toBeNull();
     expect(d.months[0].expenses[0].accountId).toBeNull();
     expect(d.months[0].income[0].accountId).toBeNull();
+  });
+});
+
+describe("expense rows saved before received/pinning existed", () => {
+  it("read NULL received as fully received and resolve NULL pins against the chain", () => {
+    const rows = expenseDataToRows(fullExpenseData());
+    for (const m of rows.months) m.startBalancePinned = null;
+    for (const i of rows.items) i.received = null;
+    const back = rowsToExpenseData(rows);
+    const jan = back.months.find((m) => m.key === "2026-01")!;
+    const feb = back.months.find((m) => m.key === "2026-02")!;
+    expect(jan.income.map((i) => i.received)).toEqual(jan.income.map((i) => i.amount));
+    expect(jan.startBalancePinned).toBe(true); // first month
+    expect(feb.startBalancePinned).toBe(true); // 500 isn't January's expected end: typed
   });
 });

@@ -1,6 +1,6 @@
 import type { ExpenseMonth, MonthExpenseItem, MonthIncomeItem } from "../../model/expenseTypes";
 import { useExpenseStore } from "../../store/expenseStore";
-import { monthWarnings, summariseMonth } from "../../expenses/calc";
+import { lineToPay, lineToReceive, monthWarnings, summariseMonth } from "../../expenses/calc";
 import { classForNumber, money } from "../format";
 import { AccountSelect } from "./AccountSelect";
 
@@ -46,7 +46,7 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
     });
   const addIncome = () =>
     update((m) => {
-      m.income.push({ id: `i${Date.now()}`, templateId: null, name: "New income", amount: 0, accountId: null });
+      m.income.push({ id: `i${Date.now()}`, templateId: null, name: "New income", amount: 0, received: 0, accountId: null });
     });
 
   return (
@@ -149,7 +149,7 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
                     onChange={(ev) => editExpense(e.id, (x) => (x.paid = parseAmount(ev.target.value)))}
                   />
                 </td>
-                <td className={classForNumber(e.amount - e.paid)}>{money(e.amount - e.paid, 2)}</td>
+                <td className={classForNumber(lineToPay(e))}>{money(lineToPay(e), 2)}</td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <button
                     className="ghost"
@@ -181,7 +181,7 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
         </div>
       </div>
 
-      <div className="card" style={{ maxWidth: 780 }}>
+      <div className="card" style={{ maxWidth: 1000 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2>Income &amp; balances</h2>
           <button className="primary" onClick={addIncome}>
@@ -190,12 +190,32 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
         </div>
         <div className="field" style={{ maxWidth: 380 }}>
           <label>Start balance (carried into the month)</label>
-          <input
-            type="number"
-            step={0.01}
-            value={month.startBalance}
-            onChange={(ev) => update((m) => (m.startBalance = parseAmount(ev.target.value)))}
-          />
+          <span>
+            <input
+              type="number"
+              step={0.01}
+              value={month.startBalance}
+              onChange={(ev) =>
+                update((m) => {
+                  m.startBalance = parseAmount(ev.target.value);
+                  m.startBalancePinned = true; // typed: a fact, no longer carried forward
+                })
+              }
+            />{" "}
+            {month.startBalancePinned ? (
+              <button
+                className="ghost"
+                title="Carry the start balance forward from the previous month's expected end instead"
+                onClick={() => update((m) => (m.startBalancePinned = false))}
+              >
+                Carry forward
+              </button>
+            ) : (
+              <span className="muted" style={{ fontSize: 12 }}>
+                carried forward from last month
+              </span>
+            )}
+          </span>
         </div>
         <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
           <b>From account</b> tags money moved into the joint account from an investment account
@@ -209,6 +229,8 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
               <th className="label">Source</th>
               <th>From account</th>
               <th>Amount</th>
+              <th>Received</th>
+              <th>To come</th>
               <th></th>
             </tr>
           </thead>
@@ -238,6 +260,23 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
                   />
                 </td>
                 <td>
+                  <input
+                    type="number"
+                    step={0.01}
+                    value={inc.received}
+                    onChange={(ev) => editIncome(inc.id, (x) => (x.received = parseAmount(ev.target.value)))}
+                  />
+                </td>
+                <td>{money(lineToReceive(inc), 2)}</td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button
+                    className="ghost"
+                    title="Mark as received in full"
+                    disabled={inc.received === inc.amount}
+                    onClick={() => editIncome(inc.id, (x) => (x.received = x.amount))}
+                  >
+                    ✓ Received
+                  </button>{" "}
                   <button className="ghost" onClick={() => update((m) => (m.income = m.income.filter((x) => x.id !== inc.id)))}>
                     Delete
                   </button>
@@ -249,6 +288,8 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
             <tr>
               <th className="label" colSpan={2}>Total (with start balance)</th>
               <th>{money(s.totalAvailable, 2)}</th>
+              <th>{money(month.startBalance + s.totalReceived, 2)}</th>
+              <th>{money(s.totalToReceive, 2)}</th>
               <th></th>
             </tr>
           </tfoot>
@@ -268,8 +309,8 @@ export function MonthView({ month }: { month: ExpenseMonth }) {
         </div>
         <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
           Enter the balance shown at the bank and the <b>Predicted</b> figure above becomes that
-          balance minus everything still to pay — if it goes red, the account will drop below zero
-          before the month ends.
+          balance minus everything still to pay, plus income still to come — if it goes red, the
+          account will drop below zero before the month ends.
         </p>
       </div>
     </>

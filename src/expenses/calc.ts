@@ -18,34 +18,55 @@ export interface MonthSummary {
   totalExpenses: number;
   /** Sum actually paid so far. */
   totalPaid: number;
-  /** Still to go out this month: Σ(amount − paid). */
+  /** Still to go out this month: Σ max(0, amount − paid) — a line paid above its amount
+   *  has nothing left to pay, it doesn't offset the others. */
   totalToPay: number;
-  /** Income excluding the start balance. */
+  /** Income excluding the start balance (expected amounts). */
   totalIncome: number;
-  /** Start balance + income (the sheet's income-side Total). */
+  /** Income actually received so far. */
+  totalReceived: number;
+  /** Income still to come this month: Σ max(0, amount − received). */
+  totalToReceive: number;
+  /** Start balance + income (the sheet's income-side Total), counting any line received
+   *  above its expected amount at what actually arrived. */
   totalAvailable: number;
-  /** totalAvailable − totalExpenses: the expected end-of-month balance
-   *  (the sheet's "Balance To Reach 0"). Negative ⇒ the account would go
-   *  below zero this month. */
+  /** The expected end-of-month balance (the sheet's "Balance To Reach 0"): totalAvailable less
+   *  every expense at the larger of its expected and paid amounts. Negative ⇒ the account would
+   *  go below zero this month. */
   headroom: number;
-  /** currentBalance − totalToPay, or null until a current balance is entered. */
+  /** currentBalance − still to pay + still to come, or null until a current balance is entered. */
   predicted: number | null;
+}
+
+/** What is still to pay on one expense line (never negative). */
+export function lineToPay(e: MonthExpenseItem): number {
+  return Math.max(0, e.amount - e.paid);
+}
+
+/** What is still to come on one income line (never negative). */
+export function lineToReceive(i: MonthIncomeItem): number {
+  return Math.max(0, i.amount - i.received);
 }
 
 export function summariseMonth(m: ExpenseMonth): MonthSummary {
   const totalExpenses = m.expenses.reduce((s, e) => s + e.amount, 0);
   const totalPaid = m.expenses.reduce((s, e) => s + e.paid, 0);
-  const totalToPay = totalExpenses - totalPaid;
+  const totalToPay = m.expenses.reduce((s, e) => s + lineToPay(e), 0);
   const totalIncome = m.income.reduce((s, i) => s + i.amount, 0);
-  const totalAvailable = m.startBalance + totalIncome;
+  const totalReceived = m.income.reduce((s, i) => s + i.received, 0);
+  const totalToReceive = m.income.reduce((s, i) => s + lineToReceive(i), 0);
+  const totalAvailable = m.startBalance + m.income.reduce((s, i) => s + Math.max(i.amount, i.received), 0);
+  const totalOut = m.expenses.reduce((s, e) => s + Math.max(e.amount, e.paid), 0);
   return {
     totalExpenses,
     totalPaid,
     totalToPay,
     totalIncome,
+    totalReceived,
+    totalToReceive,
     totalAvailable,
-    headroom: totalAvailable - totalExpenses,
-    predicted: m.currentBalance == null ? null : m.currentBalance - totalToPay,
+    headroom: totalAvailable - totalOut,
+    predicted: m.currentBalance == null ? null : m.currentBalance - totalToPay + totalToReceive,
   };
 }
 
@@ -71,10 +92,12 @@ export function createMonthFromTemplates(
   templates: ExpenseTemplates,
   key: string,
   startBalance = 0,
+  startBalancePinned = false,
 ): ExpenseMonth {
   return {
     key,
     startBalance,
+    startBalancePinned,
     currentBalance: null,
     expenses: templates.expenses.map(
       (t): MonthExpenseItem => ({
@@ -93,6 +116,7 @@ export function createMonthFromTemplates(
         templateId: t.id,
         name: t.name,
         amount: t.amount,
+        received: 0,
         accountId: t.accountId,
       }),
     ),
@@ -114,6 +138,7 @@ export function futureMonths(d: ExpenseData, todayKey: string): ExpenseMonth[] {
  *  `${key}:${templateId}` id of `createMonthFromTemplates` makes this idempotent. */
 export function applyTemplatesToMonth(templates: ExpenseTemplates, m: ExpenseMonth): ExpenseMonth {
   const paidFor = new Map(m.expenses.map((e) => [e.templateId, e.paid] as const));
+  const receivedFor = new Map(m.income.map((i) => [i.templateId, i.received] as const));
   return {
     ...m,
     expenses: [
@@ -124,10 +149,9 @@ export function applyTemplatesToMonth(templates: ExpenseTemplates, m: ExpenseMon
           name: t.name,
           day: t.day,
           amount: t.amount,
-          // Clamped, not carried: a paid figure left above the new amount would
-          // make summariseMonth report a negative "to pay", inflating the
-          // predicted balance and hiding the below-zero warning.
-          paid: Math.min(paidFor.get(t.id) ?? 0, t.amount),
+          // Carried as is: what was paid is a fact. A line paid above its new amount
+          // just has nothing left to pay (summariseMonth clamps per line).
+          paid: paidFor.get(t.id) ?? 0,
           accountId: t.accountId,
         }),
       ),
@@ -143,6 +167,7 @@ export function applyTemplatesToMonth(templates: ExpenseTemplates, m: ExpenseMon
           templateId: t.id,
           name: t.name,
           amount: t.amount,
+          received: receivedFor.get(t.id) ?? 0,
           accountId: t.accountId,
         }),
       ),
@@ -159,19 +184,58 @@ export function applyTemplatesToMonth(templates: ExpenseTemplates, m: ExpenseMon
  *  (untouched) one. The result is sorted, which also hands back past months as new
  *  objects — harmless, nothing depends on their identity. */
 export function applyTemplatesToFutureMonths(d: ExpenseData, todayKey: string): ExpenseMonth[] {
+  const synced = sortedMonths(d).map((m) => (m.key > todayKey ? applyTemplatesToMonth(d.templates, m) : m));
+  return rechainStartBalances(synced).months;
+}
+
+/**
+ * Carry each month's start balance forward from the previous month's expected end, in one
+ * forward pass — except where the user typed it (`startBalancePinned`), or there is no
+ * immediately preceding month to carry from (the first month, or one after a gap). Returns
+ * the sorted months and the keys whose start balance changed (the only ones to save).
+ */
+export function rechainStartBalances(months: ExpenseMonth[]): { months: ExpenseMonth[]; changed: string[] } {
+  const sorted = [...months].sort((a, b) => a.key.localeCompare(b.key));
   const out: ExpenseMonth[] = [];
-  for (const m of sortedMonths(d)) {
+  const changed: string[] = [];
+  for (const m of sorted) {
     const prev = out[out.length - 1];
-    if (m.key <= todayKey) {
-      out.push(m);
-      continue;
+    if (prev && !m.startBalancePinned && prev.key === addMonths(m.key, -1)) {
+      const carried = round2(summariseMonth(prev).headroom);
+      if (Math.abs(carried - m.startBalance) > 0.005) {
+        out.push({ ...m, startBalance: carried });
+        changed.push(m.key);
+        continue;
+      }
     }
-    const synced = applyTemplatesToMonth(d.templates, m);
-    // Only the very first month has nothing to chain from: it keeps its own start
-    // balance, which is the opening balance the user entered.
-    out.push(prev ? { ...synced, startBalance: round2(summariseMonth(prev).headroom) } : synced);
+    out.push(m);
   }
-  return out;
+  return { months: out, changed };
+}
+
+/**
+ * For data saved before start balances could be pinned: a month counts as pinned (typed by
+ * the user) unless its stored start balance equals what carrying forward from the month
+ * before gives — so nothing anyone typed is ever rewritten. The first month, and any after a
+ * gap, are always pinned. `isLegacy` picks the months to resolve; the rest keep their flag.
+ */
+export function resolveLegacyPins(months: ExpenseMonth[], isLegacy: (m: ExpenseMonth) => boolean): ExpenseMonth[] {
+  const sorted = [...months].sort((a, b) => a.key.localeCompare(b.key));
+  return sorted.map((m, i) => {
+    if (!isLegacy(m)) return m;
+    const prev = sorted[i - 1];
+    const chained = prev && prev.key === addMonths(m.key, -1) ? round2(summariseMonth(prev).headroom) : null;
+    return { ...m, startBalancePinned: chained == null || Math.abs(chained - m.startBalance) > 0.005 };
+  });
+}
+
+/** Every month from `fromKey` to `untilKey` that isn't tracked yet, created from the standard
+ *  items with carried-forward start balances — gaps and months before the first included. */
+export function fillMissingMonths(d: ExpenseData, fromKey: string, untilKey: string): { months: ExpenseMonth[]; added: string[] } {
+  const have = new Set(d.months.map((m) => m.key));
+  const added = monthKeysBetween(fromKey, untilKey).filter((k) => !have.has(k));
+  const created = added.map((k) => createMonthFromTemplates(d.templates, k));
+  return { months: rechainStartBalances([...d.months, ...created]).months, added };
 }
 
 function round2(x: number): number {

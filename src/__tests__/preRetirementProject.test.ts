@@ -54,6 +54,7 @@ function month(
   return {
     key,
     startBalance: 0,
+    startBalancePinned: false,
     currentBalance: null,
     expenses: (lines.expense ?? []).map(([accountId, amount, paid, day], i) => ({
       id: `${key}:e${i}`,
@@ -69,6 +70,7 @@ function month(
       templateId: null,
       name: `inc ${i}`,
       amount,
+      received: amount,
       accountId,
     })),
   };
@@ -699,5 +701,44 @@ describe("handoff on the start date itself", () => {
     const s = sampleAtDate(r, d, months, RATES, "2026-08-31");
     expect(s.basis["gia"]).toBeCloseTo(r.months[1].basis["gia"], 8);
     expect(s.balances["gia"]).toBeCloseTo(r.months[1].byAccount["gia"].end, 8);
+  });
+});
+
+describe("projectAccounts — months with no expense record", () => {
+  const templates = {
+    expenses: [
+      { id: "t-isa", name: "ISA saving", day: 10, amount: 300, accountId: "isa1" },
+      { id: "t-bills", name: "Bills", day: 1, amount: 900, accountId: null },
+    ],
+    income: [{ id: "t-pb", name: "From bonds", amount: 50, accountId: "pb1" }],
+  };
+  const accounts = () => [
+    account({ id: "isa1", kind: "isa" }),
+    account({ id: "pb1", kind: "premiumBonds", openingBalance: 1000 }),
+  ];
+
+  it("assume the standard items' tagged lines when templates are given", () => {
+    const d = data(accounts(), "2026-07");
+    const r = projectAccounts(d, [month("2026-07", { expense: [["isa1", 100]] })], { ...RATES, isa: 0, premiumBonds: 0 }, "2026-09", templates);
+    expect(r.missingMonthKeys).toEqual(["2026-08", "2026-09"]);
+    expect(r.assumedMonths.map((m) => m.key)).toEqual(["2026-08", "2026-09"]);
+    expect(r.months.map((m) => m.byAccount["isa1"].contributions)).toEqual([100, 300, 300]);
+    expect(r.months[2].byAccount["pb1"].end).toBe(900);
+    expect(r.warnings.some((w) => w.includes("standard items"))).toBe(true);
+  });
+
+  it("assume zero flows without templates (as before)", () => {
+    const r = projectAccounts(data(accounts(), "2026-07"), [], RATES, "2026-08");
+    expect(r.assumedMonths).toEqual([]);
+    expect(r.months[1].byAccount["isa1"].contributions).toBe(0);
+    expect(r.warnings.some((w) => w.includes("zero contributions"))).toBe(true);
+  });
+
+  it("sample mid-month in an assumed month with its contributions due by that day", () => {
+    const d = data(accounts(), "2026-07");
+    const rates = { ...RATES, isa: 0, premiumBonds: 0 };
+    const r = projectAccounts(d, [], rates, "2026-08", templates);
+    expect(sampleAtDate(r, d, [], rates, "2026-08-09").balances["isa1"]).toBe(300); // July's only
+    expect(sampleAtDate(r, d, [], rates, "2026-08-10").balances["isa1"]).toBe(600);
   });
 });

@@ -30,7 +30,8 @@ export function PreRetirementApp() {
   const data = usePreRetirementStore((st) => st.data);
   const dbStatus = usePreRetirementStore((st) => st.dbStatus);
   const expenseMonths = useExpenseStore((st) => st.data.months);
-  const addMonthsUntil = useExpenseStore((st) => st.addMonthsUntil);
+  const expenseTemplates = useExpenseStore((st) => st.data.templates);
+  const addMissingMonths = useExpenseStore((st) => st.addMissingMonths);
   const scenario = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
   const [tab, setTab] = useState<Tab>("forecast");
 
@@ -41,8 +42,8 @@ export function PreRetirementApp() {
   const endMonth = handoff ?? (todayKey > data.openingMonth ? todayKey : data.openingMonth);
   const kindRates = ratesForKinds(scenario.rates);
   const result = useMemo(
-    () => projectAccounts(data, expenseMonths, ratesForKinds(scenario.rates), endMonth),
-    [data, expenseMonths, scenario.rates, endMonth],
+    () => projectAccounts(data, expenseMonths, ratesForKinds(scenario.rates), endMonth, expenseTemplates),
+    [data, expenseMonths, scenario.rates, endMonth, expenseTemplates],
   );
 
   const last = result.months[result.months.length - 1];
@@ -81,7 +82,7 @@ export function PreRetirementApp() {
           ))}
           {result.missingMonthKeys.length > 0 && (
             <div style={{ marginTop: 6 }}>
-              <button className="primary" onClick={() => addMonthsUntil(endMonth)}>
+              <button className="primary" onClick={() => addMissingMonths(data.openingMonth, endMonth)}>
                 + Add expense months up to {monthLabel(endMonth)}
               </button>
             </div>

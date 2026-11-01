@@ -33,13 +33,14 @@ export function RetirementApp() {
   const stored = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
   const preData = usePreRetirementStore((st) => st.data);
   const expenseMonths = useExpenseStore((st) => st.data.months);
+  const expenseTemplates = useExpenseStore((st) => st.data.templates);
   const [tab, setTab] = useState<Tab>("dashboard");
 
   // When the scenario is linked, its starting balances come from the
   // pre-retirement projection; the engine itself stays untouched.
   const resolved = useMemo(
-    () => resolveScenarioForRun(stored, preData, expenseMonths),
-    [stored, preData, expenseMonths],
+    () => resolveScenarioForRun(stored, preData, expenseMonths, expenseTemplates),
+    [stored, preData, expenseMonths, expenseTemplates],
   );
   const scenario = resolved.scenario;
   // The lifetime search runs a dozen full simulations; deferring it keeps typing in the inputs

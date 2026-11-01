@@ -11,7 +11,7 @@
 // part of the buffer), gilts→gilts.
 
 import type { PersonId, Scenario, StartingBalances } from "../model/types";
-import type { ExpenseMonth } from "../model/expenseTypes";
+import type { ExpenseMonth, ExpenseTemplates } from "../model/expenseTypes";
 import type { PreRetirementData } from "../model/preRetirementTypes";
 import { PERSON_IDS } from "../model/preRetirementTypes";
 import { monthLabel } from "../expenses/calc";
@@ -107,6 +107,7 @@ export function resolveLinkedBalances(
   scenario: Scenario,
   pre: PreRetirementData,
   expenseMonths: ExpenseMonth[],
+  templates?: ExpenseTemplates,
 ): { balances: Record<PersonId, StartingBalances>; warnings: string[] } {
   const endMonth = handoffMonthKey(scenario.startDate);
   if (endMonth == null) {
@@ -135,7 +136,7 @@ export function resolveLinkedBalances(
     };
   }
   const rates = ratesForKinds(scenario.rates);
-  const result = projectAccounts(pre, expenseMonths, rates, endMonth);
+  const result = projectAccounts(pre, expenseMonths, rates, endMonth, templates);
   const handoff = handoffBalances(result, sampleAtDate(result, pre, expenseMonths, rates, scenario.startDate));
   if (!handoff) {
     return {
@@ -164,8 +165,9 @@ export function resolveScenarioForRun(
   scenario: Scenario,
   pre: PreRetirementData,
   expenseMonths: ExpenseMonth[],
+  templates?: ExpenseTemplates,
 ): { scenario: Scenario; warnings: string[] } {
   if (!scenario.linkPreRetirement) return { scenario, warnings: [] };
-  const { balances, warnings } = resolveLinkedBalances(scenario, pre, expenseMonths);
+  const { balances, warnings } = resolveLinkedBalances(scenario, pre, expenseMonths, templates);
   return { scenario: { ...scenario, balances }, warnings };
 }

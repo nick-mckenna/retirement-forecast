@@ -12,12 +12,15 @@ import {
   applyTemplatesToMonth,
   createMonthFromTemplates,
   defaultMonthKey,
+  fillMissingMonths,
   futureMonths,
   isMonthKey,
   monthKeysBetween,
   monthLabel,
   monthWarnings,
   nextMonthKey,
+  rechainStartBalances,
+  resolveLegacyPins,
   summariseMonth,
 } from "../expenses/calc";
 
@@ -40,11 +43,13 @@ function sampleMonth(): ExpenseMonth {
     templateId: null,
     name,
     amount,
+    received: amount,
     accountId: null,
   });
   return {
     key: "2026-01",
     startBalance: 500,
+    startBalancePinned: true,
     currentBalance: 900,
     expenses: [
       e("Savings / Investments", 30, 2000, 2000),
@@ -82,7 +87,7 @@ describe("month summary (spreadsheet formulas, synthetic figures)", () => {
       { id: "x", templateId: null, name: "Everything", day: null, amount: 5200, paid: 1800, accountId: null },
     ];
     m.startBalance = 750;
-    m.income = [{ id: "i", templateId: null, name: "All income", amount: 4300, accountId: null }];
+    m.income = [{ id: "i", templateId: null, name: "All income", amount: 4300, received: 4300, accountId: null }];
     m.currentBalance = 3600;
     const s = summariseMonth(m);
     expect(s.headroom).toBeCloseTo(-150, 2); // negative ⇒ heading below zero
@@ -257,17 +262,21 @@ describe("pushing the standard items into one month", () => {
     expect(applyTemplatesToMonth(t, m).expenses.some((e) => e.name === "Legacy line")).toBe(true);
   });
 
-  it("clamps paid to the new amount so 'to pay' can never go negative", () => {
+  it("keeps what was paid (a fact) and never reports a negative 'to pay'", () => {
     const t = sampleTemplates();
     const m = createMonthFromTemplates(t, "2026-09");
     m.expenses[0].amount = 2000; // an invoice settled early, above the standard 900
     m.expenses[0].paid = 2000;
     m.expenses[1].paid = 10; // a genuine part-payment, below the standard 30
+    m.income[0].received = 1000;
     const out = applyTemplatesToMonth(t, m);
-    expect(out.expenses[0].paid).toBe(900);
+    expect(out.expenses[0].paid).toBe(2000);
     expect(out.expenses[1].paid).toBe(10);
-    // Left at 2,000 this would report a negative to-pay and hide the warning.
-    expect(summariseMonth(out).totalToPay).toBeGreaterThanOrEqual(0);
+    expect(out.income[0].received).toBe(1000);
+    const s = summariseMonth(out);
+    expect(s.totalToPay).toBeCloseTo(0 + 20 + 400, 2); // the overpaid line has nothing left, not −1,100
+    // Out goes at what was actually paid where that is more: 2,000 + 30 + 400.
+    expect(s.headroom).toBeCloseTo(2200 - 2430, 2);
   });
 
   it("leaves the month's own facts alone and never aliases the templates", () => {
@@ -324,5 +333,112 @@ describe("pushing the standard items into every future month", () => {
     const once = applyTemplatesToFutureMonths(d, "2026-07");
     const twice = applyTemplatesToFutureMonths({ templates: t, months: once }, "2026-07");
     expect(twice).toEqual(once);
+  });
+});
+
+describe("received income and per-line clamping", () => {
+  function month(): ExpenseMonth {
+    return {
+      key: "2026-04",
+      startBalance: 300,
+      startBalancePinned: true,
+      currentBalance: 1000,
+      expenses: [
+        { id: "a", templateId: null, name: "Rent", day: 1, amount: 900, paid: 900, accountId: null },
+        { id: "b", templateId: null, name: "Energy", day: 12, amount: 150, paid: 0, accountId: null },
+        { id: "c", templateId: null, name: "Insurance", day: 3, amount: 50, paid: 80, accountId: null },
+      ],
+      income: [
+        { id: "s", templateId: null, name: "Salary", amount: 2000, received: 2000, accountId: null },
+        { id: "d", templateId: null, name: "Dividends", amount: 400, received: 0, accountId: null },
+        { id: "r", templateId: null, name: "Refund", amount: 0, received: 25, accountId: null },
+      ],
+    };
+  }
+
+  it("counts what is still to pay and still to come per line", () => {
+    const s = summariseMonth(month());
+    expect(s.totalToPay).toBe(150); // the 80-paid 50 line adds 0, not −30
+    expect(s.totalReceived).toBe(2025);
+    expect(s.totalToReceive).toBe(400);
+  });
+
+  it("expects the larger of expected and actual on each line", () => {
+    const s = summariseMonth(month());
+    expect(s.totalAvailable).toBe(300 + 2000 + 400 + 25);
+    expect(s.headroom).toBe(2725 - (900 + 150 + 80));
+  });
+
+  it("predicts the month end from the bank balance, the bills to come and the income to come", () => {
+    expect(summariseMonth(month()).predicted).toBe(1000 - 150 + 400);
+  });
+
+  it("keeps the spreadsheet figures when every income line is fully received", () => {
+    const m = month();
+    for (const i of m.income) i.received = i.amount;
+    const s = summariseMonth(m);
+    expect(s.totalToReceive).toBe(0);
+    expect(s.predicted).toBe(1000 - 150);
+  });
+});
+
+describe("carried-forward start balances", () => {
+  const t = (): ExpenseTemplates => ({
+    expenses: [{ id: "x", name: "Bills", day: 1, amount: 1000, accountId: null }],
+    income: [{ id: "y", name: "Pay", amount: 1200, accountId: null }],
+  });
+
+  it("follow an edit to an earlier month, one pass, stopping at a pinned month", () => {
+    const months = ["2026-01", "2026-02", "2026-03", "2026-04"].map((k) => createMonthFromTemplates(t(), k));
+    months[0].startBalance = 100;
+    months[0].startBalancePinned = true;
+    months[2].startBalance = 5000;
+    months[2].startBalancePinned = true; // typed: a fact
+    const { months: out, changed } = rechainStartBalances(months);
+    expect(out.map((m) => m.startBalance)).toEqual([100, 300, 5000, 5200]);
+    expect(changed).toEqual(["2026-02", "2026-04"]);
+  });
+
+  it("don't carry across a gap in the tracked months", () => {
+    const months = ["2026-01", "2026-03"].map((k) => createMonthFromTemplates(t(), k, 50));
+    expect(rechainStartBalances(months).months.map((m) => m.startBalance)).toEqual([50, 50]);
+  });
+
+  it("report nothing changed when the chain already holds", () => {
+    const months = ["2026-01", "2026-02"].map((k) => createMonthFromTemplates(t(), k));
+    months[1].startBalance = 200;
+    expect(rechainStartBalances(months).changed).toEqual([]);
+  });
+
+  it("legacy months are pinned unless they equal the chained value", () => {
+    const months = ["2026-01", "2026-02", "2026-03", "2026-05"].map((k) => createMonthFromTemplates(t(), k));
+    months[0].startBalance = 100;
+    months[1].startBalance = 300; // = 100 + 200: carried forward
+    months[2].startBalance = 999; // typed
+    months[3].startBalance = 1; // after a gap
+    const out = resolveLegacyPins(months, () => true);
+    expect(out.map((m) => m.startBalancePinned)).toEqual([true, false, true, true]);
+  });
+});
+
+describe("filling missing months", () => {
+  it("adds gaps and months before the first, carrying start balances forward", () => {
+    const tt: ExpenseTemplates = {
+      expenses: [{ id: "x", name: "Bills", day: 1, amount: 1000, accountId: null }],
+      income: [{ id: "y", name: "Pay", amount: 1200, accountId: null }],
+    };
+    const d: ExpenseData = { templates: tt, months: ["2026-03", "2026-05"].map((k) => createMonthFromTemplates(tt, k)) };
+    d.months[0].startBalance = 400;
+    d.months[0].startBalancePinned = true;
+    const { months, added } = fillMissingMonths(d, "2026-02", "2026-06");
+    expect(added).toEqual(["2026-02", "2026-04", "2026-06"]);
+    expect(months.map((m) => m.key)).toEqual(["2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]);
+    expect(months.map((m) => m.startBalance)).toEqual([0, 400, 600, 800, 1000]);
+  });
+
+  it("adds nothing when every month is tracked or the keys are invalid", () => {
+    const d = dataWith(["2026-01", "2026-02"], sampleTemplates());
+    expect(fillMissingMonths(d, "2026-01", "2026-02").added).toEqual([]);
+    expect(fillMissingMonths(d, "", "2026-05").added).toEqual([]);
   });
 });

@@ -6,10 +6,12 @@ import {
   applyTemplatesToFutureMonths,
   createMonthFromTemplates,
   defaultMonthKey,
+  fillMissingMonths,
   futureMonths,
   isMonthKey,
   monthKeyOf,
   nextMonthKey,
+  rechainStartBalances,
   sortedMonths,
   summariseMonth,
 } from "../expenses/calc";
@@ -53,10 +55,10 @@ interface ExpenseStore {
    *  month), snapshotting the standard items. Start balance defaults to the
    *  previous month's expected end balance. */
   addMonth: () => void;
-  /** Add every missing month up to and including `untilKey`, chaining each
-   *  start balance from the previous month's expected end balance. Used by the
-   *  pre-retirement module to cover its whole forecast range. */
-  addMonthsUntil: (untilKey: string) => void;
+  /** Add every month from `fromKey` to `untilKey` that isn't tracked yet — gaps and months
+   *  before the first included — from the standard items, carrying start balances forward.
+   *  Used by the pre-retirement module to cover its whole forecast range. */
+  addMissingMonths: (fromKey: string, untilKey: string) => void;
   /** Re-snapshot the standard items into every month after the current calendar
    *  month, re-chaining their start balances. The current and past months are
    *  the record of what actually happened and are never touched. */
@@ -86,15 +88,18 @@ export const useExpenseStore = create<ExpenseStore>((set) => ({
     }),
   updateMonth: (key, mut) =>
     set((st) => {
-      const months = st.data.months.map((m) => {
+      const edited = st.data.months.map((m) => {
         if (m.key !== key) return m;
         const copy = clone(m);
         mut(copy);
         return copy;
       });
+      // Later months whose start balance is carried forward follow the edit.
+      const { months, changed } = rechainStartBalances(edited);
       const data = { ...st.data, months };
       saveLocal(data);
       queueMonthSave(key);
+      for (const k of changed) queueMonthSave(k);
       return { data };
     }),
   addMonth: () =>
@@ -109,28 +114,19 @@ export const useExpenseStore = create<ExpenseStore>((set) => ({
       void track(api.saveExpenseMonth(month));
       return { data, selectedKey: key };
     }),
-  addMonthsUntil: (untilKey) =>
+  addMissingMonths: (fromKey, untilKey) =>
     set((st) => {
-      if (!isMonthKey(untilKey)) return st;
-      const months = [...st.data.months];
-      const added: ExpenseMonth[] = [];
-      // Bounded for safety; 100 years of months is far beyond any real range.
-      while (added.length < 1200) {
-        const data = { ...st.data, months };
-        const key = nextMonthKey(data, monthKeyOf(new Date()));
-        if (key > untilKey) break;
-        const sorted = sortedMonths(data);
-        const prev = sorted[sorted.length - 1];
-        const startBalance = prev ? round2(summariseMonth(prev).headroom) : 0;
-        const month = createMonthFromTemplates(st.data.templates, key, startBalance);
-        months.push(month);
-        added.push(month);
-      }
+      if (!isMonthKey(fromKey) || !isMonthKey(untilKey)) return st;
+      const { months, added } = fillMissingMonths(st.data, fromKey, untilKey);
       if (added.length === 0) return st;
       const data = { ...st.data, months };
       saveLocal(data);
-      for (const m of added) void track(api.saveExpenseMonth(m));
-      return { data, selectedKey: added[added.length - 1].key };
+      // Save the new months, and any later ones whose carried-forward start balance moved.
+      const before = new Map(st.data.months.map((m) => [m.key, m.startBalance]));
+      for (const m of months) {
+        if (added.includes(m.key) || before.get(m.key) !== m.startBalance) void track(api.saveExpenseMonth(m));
+      }
+      return { data, selectedKey: added[added.length - 1] };
     }),
   applyTemplatesToFuture: () =>
     set((st) => {
@@ -142,7 +138,8 @@ export const useExpenseStore = create<ExpenseStore>((set) => ({
       saveLocal(data);
       // Only the rewritten months go to the API; the list holds every month.
       // selectedKey is untouched: none were added or removed.
-      for (const m of months.filter((m) => m.key > todayKey)) {
+      const before = new Map(st.data.months.map((m) => [m.key, m.startBalance]));
+      for (const m of months.filter((m) => m.key > todayKey || before.get(m.key) !== m.startBalance)) {
         cancelMonthSave(m.key); // a queued save would write the same state — just avoid the duplicate PUT
         void track(api.saveExpenseMonth(m));
       }
@@ -151,9 +148,11 @@ export const useExpenseStore = create<ExpenseStore>((set) => ({
   deleteMonth: (key) =>
     set((st) => {
       cancelMonthSave(key);
-      const data = { ...st.data, months: st.data.months.filter((m) => m.key !== key) };
+      const { months, changed } = rechainStartBalances(st.data.months.filter((m) => m.key !== key));
+      const data = { ...st.data, months };
       saveLocal(data);
       void track(api.deleteExpenseMonth(key));
+      for (const k of changed) queueMonthSave(k);
       const selectedKey = st.selectedKey === key ? defaultKey(data) : st.selectedKey;
       return { data, selectedKey };
     }),

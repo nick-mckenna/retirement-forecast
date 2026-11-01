@@ -156,10 +156,11 @@ export function InputsPanel() {
   const update = useStore((st) => st.update);
   const preData = usePreRetirementStore((st) => st.data);
   const expenseMonths = useExpenseStore((st) => st.data.months);
+  const expenseTemplates = useExpenseStore((st) => st.data.templates);
 
   const linked = useMemo(
-    () => (s.linkPreRetirement ? resolveLinkedBalances(s, preData, expenseMonths) : null),
-    [s, preData, expenseMonths],
+    () => (s.linkPreRetirement ? resolveLinkedBalances(s, preData, expenseMonths, expenseTemplates) : null),
+    [s, preData, expenseMonths, expenseTemplates],
   );
 
   const person = (id: PersonId) => {
