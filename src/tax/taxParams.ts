@@ -8,7 +8,7 @@ export const BASE_TAX_PARAMS: Omit<TaxYearParams, "year"> = {
   personalAllowance: 12570,
   paTaperThreshold: 100000,
   basicRateBand: 37700,
-  higherRateBand: 87440, // 125140 - (12570 + 37700)
+  higherRateBand: 87440, // 125140 - 37700 (additional rate starts at £125,140 taxable)
   basicRate: 0.2,
   higherRate: 0.4,
   additionalRate: 0.45,

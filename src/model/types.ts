@@ -88,7 +88,9 @@ export interface TaxYearParams {
   paTaperThreshold: number;
   /** Width of the basic-rate band above the personal allowance. */
   basicRateBand: number;
-  /** Income above (PA + basicRateBand + higherRateBand) is taxed at the additional rate. */
+  /** Width of the higher-rate band. Bands are measured on *taxable* income (after the
+   *  personal allowance), so the additional rate starts at basicRateBand + higherRateBand
+   *  = £125,140 of taxable income — which is also gross income once the PA has tapered away. */
   higherRateBand: number;
   basicRate: number;
   higherRate: number;

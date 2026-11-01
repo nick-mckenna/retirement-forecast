@@ -34,14 +34,17 @@ export function PreRetirementApp() {
   const scenario = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
   const [tab, setTab] = useState<Tab>("forecast");
 
-  const endMonth = handoffMonthKey(scenario.startDate);
+  const todayKey = monthKeyOf(new Date());
+  // An invalid start date (e.g. the field was cleared) has no handoff month: project to
+  // today (or the opening month) instead, and say so, rather than projecting nothing.
+  const handoff = handoffMonthKey(scenario.startDate);
+  const endMonth = handoff ?? (todayKey > data.openingMonth ? todayKey : data.openingMonth);
   const kindRates = ratesForKinds(scenario.rates);
   const result = useMemo(
     () => projectAccounts(data, expenseMonths, ratesForKinds(scenario.rates), endMonth),
     [data, expenseMonths, scenario.rates, endMonth],
   );
 
-  const todayKey = monthKeyOf(new Date());
   const last = result.months[result.months.length - 1];
   const todayMonth = result.months.find((m) => m.key === todayKey);
   const actual = useMemo(() => latestActualTotal(data), [data]);
@@ -64,8 +67,14 @@ export function PreRetirementApp() {
         <DbChip status={dbStatus} />
       </div>
 
-      {result.warnings.length > 0 && (
+      {(result.warnings.length > 0 || handoff == null) && (
         <div className="warn-banner">
+          {handoff == null && (
+            <div>
+              ⚠ “{scenario.name}” has no valid model start date, so there is no retirement handoff — projecting to{" "}
+              {monthLabel(endMonth)} instead. Set the start date in the Retirement forecast inputs.
+            </div>
+          )}
           {result.warnings.map((w, i) => (
             <div key={i}>⚠ {w}</div>
           ))}

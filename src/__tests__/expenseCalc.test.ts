@@ -149,6 +149,13 @@ describe("month keys", () => {
     expect(monthKeysBetween("2026-08", "2026-07")).toEqual([]);
   });
 
+  it("returns no months (rather than looping forever) for a malformed key", () => {
+    // "NaN-NaN" is what an empty start date used to turn into; it sorts after every real key.
+    expect(monthKeysBetween("2026-07", "NaN-NaN")).toEqual([]);
+    expect(monthKeysBetween("", "2026-07")).toEqual([]);
+    expect(monthKeysBetween("2026-07", "2026-13")).toEqual([]);
+  });
+
   it("defaults to the current month, else the nearest tracked one", () => {
     const d = defaultExpenseData();
     expect(defaultMonthKey(d, "2026-07")).toBeNull(); // nothing tracked yet

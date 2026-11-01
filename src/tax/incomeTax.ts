@@ -12,9 +12,8 @@ export interface IncomeParts {
 export interface IncomeTaxResult {
   tax: number;
   personalAllowanceUsed: number;
+  /** Taxable income after the personal allowance (0%-rated slices such as the PSA included). */
   taxableTotal: number;
-  /** Marginal rate on the next £1 of non-savings income (for strategy decisions). */
-  marginalRate: number;
   breakdown: {
     nonSavingsTax: number;
     savingsTax: number;
@@ -124,23 +123,10 @@ export function computeIncomeTax(parts: IncomeParts, p: TaxYearParams): IncomeTa
 
   const tax = round2(nonSavingsTax + savingsTax + dividendTax);
 
-  // Marginal rate on the next £1 of non-savings income.
-  let marginalRate: number;
-  const nsTaxablePos = nsAfterPA;
-  if (nonSavings < paEff) marginalRate = 0;
-  else if (nsTaxablePos < p.basicRateBand) marginalRate = p.basicRate;
-  else if (nsTaxablePos < p.basicRateBand + p.higherRateBand) marginalRate = p.higherRate;
-  else marginalRate = p.additionalRate;
-  // PA taper zone effectively doubles the marginal rate between 100k and 125,140.
-  if (total > p.paTaperThreshold && total < p.paTaperThreshold + 2 * p.personalAllowance) {
-    marginalRate = p.higherRate * 1.5;
-  }
-
   return {
     tax,
     personalAllowanceUsed: paEff,
     taxableTotal,
-    marginalRate,
     breakdown: {
       nonSavingsTax: round2(nonSavingsTax),
       savingsTax: round2(savingsTax),
@@ -151,17 +137,4 @@ export function computeIncomeTax(parts: IncomeParts, p: TaxYearParams): IncomeTa
 
 function round2(x: number): number {
   return Math.round(x * 100) / 100;
-}
-
-/** Remaining headroom (non-savings income) before the next tax threshold is hit. */
-export function bandHeadroom(existingNonSavings: number, p: TaxYearParams) {
-  const paEff = p.personalAllowance; // headroom computed ignoring taper for simplicity
-  return {
-    toPersonalAllowance: Math.max(0, paEff - existingNonSavings),
-    toBasicRateTop: Math.max(0, paEff + p.basicRateBand - existingNonSavings),
-    toHigherRateTop: Math.max(
-      0,
-      paEff + p.basicRateBand + p.higherRateBand - existingNonSavings,
-    ),
-  };
 }

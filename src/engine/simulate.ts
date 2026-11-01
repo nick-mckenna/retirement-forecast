@@ -1,8 +1,7 @@
 import type { PersonId, Scenario } from "../model/types";
 import { annualToMonthly } from "../model/rates";
 import { resolveIncome, targetForYear } from "../model/incomeTargets";
-import { computeIncomeTax } from "../tax/incomeTax";
-import { computeCGT } from "../tax/cgt";
+import { personYearTax } from "../tax/personTax";
 import { statePensionForYear } from "../tax/statePension";
 import { resolveTaxParams } from "../tax/taxParams";
 import { ageAtTaxYearStart, addMonths, parseDate, toIso } from "../tax/taxYear";
@@ -125,6 +124,9 @@ export function simulate(scenario: Scenario): SimResult {
   const modelStartYear = income.startYear;
   const overrideMap = new Map(scenario.overrides.map((o) => [o.key, o.amount]));
   const purchases = (scenario.purchases ?? []).map((pp) => ({ ...pp, at: parseDate(pp.date).getTime() }));
+  const handledPurchases = new Set<string>();
+  /** Income the monthly draw could not pay, per tax year (with the first month it happened). */
+  const shortfalls = new Map<number, { amount: number; firstMonthIso: string }>();
 
   const balanceRow = (label: string, dateIso: string): void => {
     const nick = snapshot("nick");
@@ -239,13 +241,11 @@ export function simulate(scenario: Scenario): SimResult {
           dividends: accum.dividends[id],
         };
         const gain = accum.realisedGain[id] + extraGain;
-        const it = computeIncomeTax(parts, p);
-        const basicBandRemaining = Math.max(0, p.personalAllowance + p.basicRateBand - it.taxableTotal);
-        const cgt = computeCGT(gain, basicBandRemaining, p);
+        const t = personYearTax({ ...parts, gain }, p);
         out[id] = {
-          incomeTax: it.tax,
-          cgt: cgt.tax,
-          total: round2(it.tax + cgt.tax),
+          incomeTax: t.incomeTax,
+          cgt: t.cgt,
+          total: t.total,
           taxableNonSavings: round2(parts.nonSavings),
           savingsIncome: round2(parts.savings),
           dividends: round2(parts.dividends),
@@ -357,14 +357,17 @@ export function simulate(scenario: Scenario): SimResult {
         const isaG = acc.isa * mInv;
         const penG = acc.pension * mInv;
         const giaG = acc.gia * mInv;
-        const savG = acc.savings * mSav;
+        // Interest only accrues on money actually held: an overdrawn balance earns nothing
+        // (it must not become negative taxable savings income).
+        const savG = Math.max(0, acc.savings) * mSav;
         acc.isa += isaG;
         acc.pension += penG;
         acc.gia += giaG;
         acc.savings += savG;
         accum.savingsIncome[id] += savG;
-        // GIA dividend portion of the total return is taxable (assumed reinvested).
-        accum.dividends[id] += acc.gia * annualToMonthly(scenario.rates.giaDividendYield);
+        // GIA dividend portion of the total return is taxable (assumed reinvested). A yield
+        // is paid out pro rata, not compounded, so the monthly slice is simply yield / 12.
+        accum.dividends[id] += Math.max(0, acc.gia) * (scenario.rates.giaDividendYield / 12);
         gd[id] = { isa: isaG, pension: penG, gia: giaG, savings: savG };
       }
       txRow("Growth", toIso(monthDate), gd);
@@ -388,8 +391,14 @@ export function simulate(scenario: Scenario): SimResult {
       const perPerson = monthlyTarget / 2;
       const inc: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
       for (const id of PERSONS) {
-        const drawn = drawFromBuffer(state, id, perPerson, warnings, y);
+        const drawn = drawFromBuffer(state, id, perPerson);
         inc[id] = { income: drawn, savings: -drawn };
+        const short = perPerson - drawn;
+        if (short > 0.01) {
+          const s = shortfalls.get(y) ?? { amount: 0, firstMonthIso: toIso(monthDate) };
+          s.amount += short;
+          shortfalls.set(y, s);
+        }
       }
       txRow("Income", toIso(monthDate), inc);
 
@@ -398,6 +407,7 @@ export function simulate(scenario: Scenario): SimResult {
       const nextMonth = addMonths(yearStart, m + 1).getTime();
       for (const pur of purchases) {
         if (pur.at < monthDate.getTime() || pur.at >= nextMonth) continue;
+        handledPurchases.add(pur.id);
         const raised = fundCash(pur.amount, `Fund: ${pur.label}`, toIso(monthDate));
         const spent = spendCash(state, pur.amount);
         txRow(`Purchase: ${pur.label}`, toIso(monthDate), {
@@ -549,7 +559,35 @@ export function simulate(scenario: Scenario): SimResult {
     });
   }
 
+  warnings.push(...shortfallWarnings(shortfalls));
+  for (const pur of purchases) {
+    if (handledPurchases.has(pur.id)) continue;
+    warnings.push(
+      `Purchase "${pur.label}" on ${pur.date} falls outside the modelled period and is ignored.`,
+    );
+  }
+
   return { rows, years, warnings, gilts };
+}
+
+const gbp = (x: number) => `£${Math.round(x).toLocaleString("en-GB")}`;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** One warning naming every tax year whose income draw came up short, with how much and
+ *  when it started, so a trivial gap reads differently from a serious one. */
+function shortfallWarnings(shortfalls: Map<number, { amount: number; firstMonthIso: string }>): string[] {
+  if (shortfalls.size === 0) return [];
+  const years = [...shortfalls.entries()].sort((a, b) => a[0] - b[0]);
+  const shown = years.slice(0, 5).map(([y, s]) => {
+    const [yy, mm] = s.firstMonthIso.split("-").map(Number);
+    return `${y}/${String(y + 1).slice(2)} (${gbp(s.amount)} short from ${MONTHS[mm - 1]} ${yy})`;
+  });
+  const total = years.reduce((t, [, s]) => t + s.amount, 0);
+  const more = years.length > shown.length ? `, and ${years.length - shown.length} more year(s)` : "";
+  return [
+    `Income cash ran short by ${gbp(total)} in total: ${shown.join(", ")}${more}. ` +
+      `The buffer may be too small, or investments are running out.`,
+  ];
 }
 
 /**
@@ -677,13 +715,9 @@ function applyOverrides(
   return [...byKey.values()];
 }
 
-function drawFromBuffer(
-  state: SimState,
-  id: PersonId,
-  amount: number,
-  warnings: string[],
-  year: number,
-): number {
+/** Draw a person's monthly income from cash: their own first, then their spouse's. Returns
+ *  the amount actually drawn (the caller records any shortfall for the warning). */
+function drawFromBuffer(state: SimState, id: PersonId, amount: number): number {
   const acc = state.balances[id];
   const fromSelf = Math.min(amount, Math.max(0, acc.savings));
   acc.savings -= fromSelf;
@@ -694,9 +728,6 @@ function drawFromBuffer(
     const fromOther = Math.min(remaining, Math.max(0, state.balances[other].savings));
     state.balances[other].savings -= fromOther;
     remaining -= fromOther;
-  }
-  if (remaining > 1 && !warnings.some((w) => w.includes(`cash ran short`))) {
-    warnings.push(`Income cash ran short in tax year ${year}/${year + 1}; buffer may be too small.`);
   }
   return amount - remaining;
 }

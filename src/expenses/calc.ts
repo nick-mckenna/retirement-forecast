@@ -198,10 +198,22 @@ export function addMonths(key: string, n: number): string {
   return `${ny}-${String(nm).padStart(2, "0")}`;
 }
 
-/** Every month key from `fromKey` to `toKey` inclusive; [] when from > to. */
+/** Upper bound on any month range (200 years) — a guard, never a real limit. */
+const MAX_MONTH_RANGE = 2400;
+
+function monthIndex(key: string): number {
+  const [y, m] = key.split("-").map(Number);
+  return y * 12 + (m - 1);
+}
+
+/** Every month key from `fromKey` to `toKey` inclusive; [] when from > to or either key is
+ *  not a valid "yyyy-mm" (e.g. derived from an empty date). Counted, not compared as
+ *  strings, so a malformed key can never make it loop forever. */
 export function monthKeysBetween(fromKey: string, toKey: string): string[] {
+  if (!isMonthKey(fromKey) || !isMonthKey(toKey)) return [];
+  const count = Math.min(monthIndex(toKey) - monthIndex(fromKey) + 1, MAX_MONTH_RANGE);
   const keys: string[] = [];
-  for (let k = fromKey; k <= toKey; k = addMonths(k, 1)) keys.push(k);
+  for (let i = 0, k = fromKey; i < count; i++, k = addMonths(k, 1)) keys.push(k);
   return keys;
 }
 
@@ -209,6 +221,13 @@ export function monthKeysBetween(fromKey: string, toKey: string): string[] {
 export function daysInMonth(key: string): number {
   const [y, m] = key.split("-").map(Number);
   return new Date(y, m, 0).getDate();
+}
+
+/** A day-of-month clamped into the month: a due day of 29–31 lands on the last day of a
+ *  shorter month, and null (no day given) means the month's last day. */
+export function clampDay(day: number | null | undefined, monthKey: string): number {
+  const dim = daysInMonth(monthKey);
+  return Math.min(Math.max(day ?? dim, 1), dim);
 }
 
 /** "2026-01" → "January 2026". */

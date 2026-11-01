@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { PersonId, Scenario } from "../model/types";
 import { useStore } from "../store/scenarioStore";
 import { usePreRetirementStore } from "../store/preRetirementStore";
@@ -6,7 +6,45 @@ import { useExpenseStore } from "../store/expenseStore";
 import { resolveLinkedBalances, handoffMonthKey } from "../preretirement/link";
 import { monthLabel } from "../expenses/calc";
 import { investableAssets, resolveIncome } from "../model/incomeTargets";
+import { isIsoDate } from "../tax/taxYear";
 import { money, pct } from "./format";
+
+/** A date input that only commits real dates. Clearing it, or a half-typed value, stays a
+ *  local draft (with a note) instead of writing "" into the scenario — an empty start date
+ *  has no handoff month and used to hang the projection. */
+function DateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <span>
+        <input
+          type="date"
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (isIsoDate(e.target.value)) onChange(e.target.value);
+          }}
+        />
+        {!isIsoDate(draft) && (
+          <span className="num-neg" style={{ fontSize: 12 }}>
+            {" "}
+            Enter a full date — still using {value}.
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
 
 function NumField({
   label,
@@ -121,7 +159,8 @@ export function InputsPanel() {
         {lb ? (
           <>
             <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
-              Projected by the Pre-retirement module at end of {monthLabel(handoffMonthKey(s.startDate))}.
+              Projected by the Pre-retirement module at end of{" "}
+              {monthLabel(handoffMonthKey(s.startDate) ?? s.startDate.slice(0, 7))}.
               Savings includes Premium Bonds.
             </p>
             <ValueRow label="ISA" value={money(lb.isa)} />
@@ -236,14 +275,11 @@ export function InputsPanel() {
 
       <div className="card">
         <h2>Starting position &amp; final income</h2>
-        <div className="field">
-          <label>Model start date</label>
-          <input
-            type="date"
-            value={s.startDate}
-            onChange={(e) => update((sc) => (sc.startDate = e.target.value))}
-          />
-        </div>
+        <DateField
+          label="Model start date"
+          value={s.startDate}
+          onChange={(v) => update((sc) => (sc.startDate = v))}
+        />
         <div className="field">
           <label>Link to pre-retirement forecast</label>
           <input

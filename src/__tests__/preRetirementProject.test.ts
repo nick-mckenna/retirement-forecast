@@ -4,7 +4,7 @@ import type { InvestmentAccount, PreRetirementData } from "../model/preRetiremen
 import { defaultPreRetirementData } from "../model/preRetirementTypes";
 import { annualToMonthly, grow } from "../model/rates";
 import { defaultScenario } from "../model/defaults";
-import { migratePreRetirementData } from "../model/migrate";
+import { migratePreRetirementData, migrateScenario } from "../model/migrate";
 import {
   balancesAtDate,
   latestActualTotal,
@@ -577,5 +577,86 @@ describe("pre-retirement data migration", () => {
     expect(d.accounts.some((a) => a.name === "Tracy Pension")).toBe(true);
     expect(d.overrides).toEqual([]);
     expect(d.openingMonth).toMatch(/^\d{4}-\d{2}$/);
+  });
+});
+
+describe("guard rails", () => {
+  it("does not double-count a due day past the month's end against an end-of-month record", () => {
+    // February has 28 days: a line due on the 30th lands on the 28th, inside the month-end record.
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })], "2027-02");
+    d.overrides = [{ accountId: "isa1", monthKey: "2027-02", day: null, value: 10500 }];
+    const months = [month("2027-02", { expense: [["isa1", 500, 0, 30]] })];
+    const r = projectAccounts(d, months, RATES, "2027-02");
+    expect(r.months[0].byAccount["isa1"].end).toBe(10500);
+  });
+
+  it("counts a day-31 line by the last day of a 30-day month, matching the cell end", () => {
+    const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })], "2026-09");
+    const months = [month("2026-09", { expense: [["isa1", 500, 0, 31]] })];
+    const r = projectAccounts(d, months, RATES, "2026-09");
+    const cellEnd = r.months[0].byAccount["isa1"].end;
+    expect(balancesAtDate(r, d, months, RATES, "2026-09-30")["isa1"]).toBeCloseTo(cellEnd, 10);
+  });
+
+  it("hands off a duplicated account id once", () => {
+    const scenario = defaultScenario();
+    scenario.linkPreRetirement = true;
+    scenario.startDate = "2026-08-05"; // handoff month 2026-07 = the opening month
+    const d = data([
+      account({ id: "dup", kind: "isa", openingBalance: 100 }),
+      account({ id: "dup", kind: "isa", openingBalance: 999, name: "copy" }),
+    ]);
+    const { balances, warnings } = resolveLinkedBalances(scenario, d, []);
+    expect(balances.nick.isa).toBeCloseTo(grow(100, ratesForKinds(scenario.rates).isa, 1 / 12), 6);
+    expect(warnings.some((w) => w.includes("Duplicate"))).toBe(true);
+  });
+
+  it("warns when withdrawals drive an account below zero, and hands off 0 for it", () => {
+    const scenario = defaultScenario();
+    scenario.linkPreRetirement = true;
+    scenario.startDate = "2026-10-05"; // handoff 2026-09
+    const d = data([
+      account({ id: "pb", kind: "premiumBonds", openingBalance: 1000 }),
+      account({ id: "isa", kind: "isa", openingBalance: 5000 }),
+    ]);
+    const months = ["2026-07", "2026-08", "2026-09"].map((k) => month(k, { income: [["pb", 500]] }));
+    const r = projectAccounts(d, months, RATES, "2026-09");
+    expect(r.warnings.some((w) => w.includes("goes below zero"))).toBe(true);
+    // A negative balance doesn't "grow": the shortfall stays exactly the overdrawn amount.
+    expect(r.months[2].byAccount["pb"].end).toBeLessThan(0);
+    const { balances, warnings } = resolveLinkedBalances(scenario, d, months);
+    expect(balances.nick.savings).toBe(0);
+    expect(warnings.some((w) => w.includes("treated as 0"))).toBe(true);
+  });
+
+  it("keeps the manual balances when the registry is still all zero", () => {
+    const scenario = defaultScenario();
+    scenario.linkPreRetirement = true;
+    scenario.startDate = "2026-10-05";
+    const d = data([account({ id: "isa", kind: "isa" }), account({ id: "pen", kind: "pension" })]);
+    const { balances, warnings } = resolveLinkedBalances(scenario, d, []);
+    expect(balances).toEqual(scenario.balances);
+    expect(warnings[0]).toContain("no balances have been entered");
+  });
+
+  it("treats an empty or impossible start date as having no handoff", () => {
+    expect(handoffMonthKey("")).toBeNull();
+    expect(handoffMonthKey("2026-02-30")).toBeNull();
+    const scenario = defaultScenario();
+    scenario.linkPreRetirement = true;
+    scenario.startDate = "";
+    const { balances, warnings } = resolveLinkedBalances(
+      scenario,
+      data([account({ id: "isa", kind: "isa", openingBalance: 100 })]),
+      [],
+    );
+    expect(balances).toEqual(scenario.balances);
+    expect(warnings[0]).toContain("isn't a valid date");
+  });
+
+  it("repairs an empty start date on load", () => {
+    const s = defaultScenario();
+    s.startDate = "";
+    expect(migrateScenario(s).startDate).toBe(`${s.income.startYear}-04-05`);
   });
 });

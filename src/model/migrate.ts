@@ -8,6 +8,7 @@ import {
 } from "./preRetirementTypes";
 import { defaultScenario } from "./defaults";
 import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
+import { isIsoDate } from "../tax/taxYear";
 
 /**
  * Backfill fields added in later versions so older saved scenarios (from the
@@ -16,6 +17,9 @@ import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 export function migrateScenario(s: Scenario): Scenario {
   return {
     ...s,
+    // A cleared/garbled start date has no handoff month and used to hang the projection:
+    // repair it to the day before the first modelled tax year.
+    startDate: isIsoDate(s.startDate) ? s.startDate : `${s.income.startYear}-04-05`,
     linkPreRetirement: s.linkPreRetirement ?? false,
     income: { ...s.income, mode: s.income.mode ?? "fixed", swrRate: s.income.swrRate ?? defaultScenario().income.swrRate },
     strategy: { ...s.strategy, taxMode: s.strategy.taxMode ?? "heuristic" },

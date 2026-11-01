@@ -101,3 +101,42 @@ describe("gilt ladder", () => {
     expect(p.tracy).toBeCloseTo(57000, -1); // the whole household surplus: 5k + 60k − 8k
   });
 });
+
+describe("engine warnings and accrual guards", () => {
+  it("names every short year, with amounts, in a single warning", () => {
+    const s = defaultScenario();
+    for (const id of ["nick", "tracy"] as const) {
+      s.balances[id] = { ...s.balances[id], isa: 0, pension: 0, gia: 0, savings: 0, gilts: 0 };
+    }
+    const w = simulate(s).warnings.filter((x) => x.includes("cash ran short"));
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/ran short by £[\d,]+ in total: 20\d\d\/\d\d \(£[\d,]+ short from [A-Z][a-z]{2} 20\d\d\)/);
+    expect(w[0]).toMatch(/and \d+ more year\(s\)/);
+  });
+
+  it("warns about a purchase dated outside the modelled period", () => {
+    const s = defaultScenario();
+    s.purchases = [{ id: "p1", label: "Boat", date: "2099-06-01", amount: 1000 }];
+    expect(simulate(s).warnings).toContain(
+      'Purchase "Boat" on 2099-06-01 falls outside the modelled period and is ignored.',
+    );
+  });
+
+  it("never books interest on overdrawn cash as (negative) taxable savings income", () => {
+    const s = defaultScenario();
+    s.purchases = [{ id: "p1", label: "Too big", date: "2030-06-01", amount: 50_000_000 }];
+    for (const y of simulate(s).years) {
+      expect(y.tax.nick.savingsIncome).toBeGreaterThanOrEqual(0);
+      expect(y.tax.tracy.savingsIncome).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("accrues GIA dividends as yield / 12 a month (a yield, not a compound rate)", () => {
+    const s = defaultScenario();
+    s.rates.investmentGrowth = 0; // hold the GIA flat after the April Bed & ISA
+    s.rates.giaDividendYield = 0.12;
+    const gia = s.balances.nick.gia;
+    const afterIsaFill = gia - Math.min(20000, gia);
+    expect(simulate(s).years[0].tax.nick.dividends).toBeCloseTo(afterIsaFill * 0.12, 1);
+  });
+});

@@ -26,7 +26,7 @@ import type {
   PreRetirementData,
 } from "../model/preRetirementTypes";
 import { annualToMonthly } from "../model/rates";
-import { daysInMonth, monthKeysBetween, monthLabel } from "../expenses/calc";
+import { clampDay, daysInMonth, monthKeysBetween, monthLabel } from "../expenses/calc";
 
 export interface AccountMonthCell {
   /** Balance at the start of the month (= previous month's end). */
@@ -62,6 +62,9 @@ export interface ProjectionMonth {
 }
 
 export interface PreRetirementResult {
+  /** The registry accounts actually projected (duplicate ids dropped, first one wins) — iterate
+   *  these, not the raw registry, when reading cells. */
+  accounts: InvestmentAccount[];
   /** Chronological, openingMonth .. endMonth inclusive; empty if endMonth < openingMonth. */
   months: ProjectionMonth[];
   warnings: string[];
@@ -122,7 +125,9 @@ export function monthlyFlows(
       const f = get(m.key, e.accountId);
       if (f) {
         f.contributions += e.amount;
-        f.contributionsByDay.push({ day: e.day, amount: e.amount });
+        // A due day past the month's length (e.g. the 30th in February) falls on its last
+        // day — otherwise it would sort after an end-of-month record and be counted twice.
+        f.contributionsByDay.push({ day: e.day == null ? null : clampDay(e.day, m.key), amount: e.amount });
       }
     }
     for (const inc of m.income) {
@@ -138,6 +143,25 @@ function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x));
 }
 
+/** The registry with duplicate ids dropped (first one wins — possible only via hand-edited
+ *  backups). Every consumer of projected cells must use this list, never the raw registry. */
+export function dedupeAccounts(all: InvestmentAccount[]): {
+  accounts: InvestmentAccount[];
+  duplicates: InvestmentAccount[];
+} {
+  const accounts: InvestmentAccount[] = [];
+  const duplicates: InvestmentAccount[] = [];
+  const seen = new Set<string>();
+  for (const a of all) {
+    if (seen.has(a.id)) duplicates.push(a);
+    else {
+      seen.add(a.id);
+      accounts.push(a);
+    }
+  }
+  return { accounts, duplicates };
+}
+
 /** The heart of the module: project every registry account from the opening
  *  month to `endMonth` (inclusive) using the given per-kind annual growth rates. */
 export function projectAccounts(
@@ -148,17 +172,8 @@ export function projectAccounts(
 ): PreRetirementResult {
   const warnings: string[] = [];
 
-  // Guard against duplicate ids (possible only via hand-edited backups).
-  const accounts: InvestmentAccount[] = [];
-  const seen = new Set<string>();
-  for (const a of data.accounts) {
-    if (seen.has(a.id)) {
-      warnings.push(`Duplicate account id "${a.id}" — ignoring "${a.name}".`);
-      continue;
-    }
-    seen.add(a.id);
-    accounts.push(a);
-  }
+  const { accounts, duplicates } = dedupeAccounts(data.accounts);
+  for (const a of duplicates) warnings.push(`Duplicate account id "${a.id}" — ignoring "${a.name}".`);
 
   const { flows, unknownAccountIds } = monthlyFlows(expenseMonths, accounts);
   if (unknownAccountIds.length > 0) {
@@ -168,7 +183,7 @@ export function projectAccounts(
   }
 
   if (endMonth < data.openingMonth) {
-    return { months: [], warnings, missingMonthKeys: [], unknownAccountIds };
+    return { accounts, months: [], warnings, missingMonthKeys: [], unknownAccountIds };
   }
 
   // Tagged flows before the opening month are already inside the opening
@@ -228,6 +243,8 @@ export function projectAccounts(
   }
 
   const months: ProjectionMonth[] = [];
+  // First month and lowest value of any account driven below zero (withdrawals exceeding it).
+  const negative = new Map<string, { firstKey: string; low: number }>();
   for (const key of range) {
     const monthFlows = flows.get(key);
     const byAccount: Record<string, AccountMonthCell> = {};
@@ -235,7 +252,8 @@ export function projectAccounts(
     for (const a of accounts) {
       const start = balances.get(a.id)!;
       const monthlyRate = annualToMonthly(rates[a.kind]);
-      const monthGrowth = start * monthlyRate;
+      // A negative balance is a shortfall, not an investment: it doesn't grow.
+      const monthGrowth = Math.max(0, start) * monthlyRate;
       const f = monthFlows?.get(a.id);
       const monthContributions = f?.contributions ?? 0;
       const monthWithdrawals = f?.withdrawals ?? 0;
@@ -257,8 +275,8 @@ export function projectAccounts(
         // and tagged income. Left for the rest of the month: growth pro-rated
         // by calendar days, plus contributions due later.
         const dim = daysInMonth(key);
-        const day = Math.min(Math.max(record.day ?? dim, 1), dim);
-        const growth = record.value * (Math.pow(1 + monthlyRate, (dim - day) / dim) - 1);
+        const day = clampDay(record.day, key);
+        const growth = Math.max(0, record.value) * (Math.pow(1 + monthlyRate, (dim - day) / dim) - 1);
         const contributions = (f?.contributionsByDay ?? [])
           .filter((c) => (c.day ?? 1) > day)
           .reduce((s, c) => s + c.amount, 0);
@@ -288,11 +306,25 @@ export function projectAccounts(
       byAccount[a.id] = cell;
       balances.set(a.id, cell.end);
       total += cell.end;
+      if (cell.end < -0.005) {
+        const n = negative.get(a.id);
+        if (!n) negative.set(a.id, { firstKey: key, low: cell.end });
+        else n.low = Math.min(n.low, cell.end);
+      }
     }
     months.push({ key, byAccount, basis: Object.fromEntries(basis), total });
   }
 
-  return { months, warnings, missingMonthKeys, unknownAccountIds };
+  for (const a of accounts) {
+    const n = negative.get(a.id);
+    if (!n) continue;
+    warnings.push(
+      `${a.name} goes below zero in ${monthLabel(n.firstKey)} (lowest ${Math.round(n.low).toLocaleString("en-GB")}) ` +
+        `— the withdrawals tagged to it exceed its balance.`,
+    );
+  }
+
+  return { accounts, months, warnings, missingMonthKeys, unknownAccountIds };
 }
 
 /** The account's most recent actual-balance record — the one the Accounts UI
@@ -316,9 +348,7 @@ export function latestOverride(data: PreRetirementData, accountId: string): Bala
  *  and a day past the month's length clamps to its last day (as the engine
  *  reads it). */
 export function overrideDateIso(o: { monthKey: string; day: number | null }): string {
-  const dim = daysInMonth(o.monthKey);
-  const day = Math.min(Math.max(o.day ?? dim, 1), dim);
-  return `${o.monthKey}-${String(day).padStart(2, "0")}`;
+  return `${o.monthKey}-${String(clampDay(o.day, o.monthKey)).padStart(2, "0")}`;
 }
 
 export interface LatestActualTotal {
@@ -342,10 +372,7 @@ export function latestActualTotal(data: PreRetirementData): LatestActualTotal {
   let latestDate: string | null = null;
   let recordedCount = 0;
   let openingCount = 0;
-  const seen = new Set<string>();
-  for (const a of data.accounts) {
-    if (seen.has(a.id)) continue; // duplicate ids: first one wins, like the engine
-    seen.add(a.id);
+  for (const a of dedupeAccounts(data.accounts).accounts) {
     const latest = latestOverride(data, a.id);
     if (latest) {
       total += latest.value;
@@ -392,22 +419,21 @@ export function balancesAtDate(
   const month = result.months.find((m) => m.key === monthKey);
   if (!month) return out; // unreachable: every month in the range is emitted
   const dim = daysInMonth(monthKey);
-  const day = Math.min(Math.max(Number(dateIso.slice(8, 10)) || dim, 1), dim);
-  const clampDay = (d: number | null | undefined) => Math.min(Math.max(d ?? dim, 1), dim);
+  const day = clampDay(Number(dateIso.slice(8, 10)) || null, monthKey);
   const { flows } = monthlyFlows(
     expenseMonths.filter((m) => m.key === monthKey),
-    data.accounts,
+    result.accounts,
   );
   const monthFlows = flows.get(monthKey);
-  for (const a of data.accounts) {
+  for (const a of result.accounts) {
     const cell = month.byAccount[a.id];
-    if (!cell || a.id in out) continue; // duplicate ids: first one wins, like the engine
+    if (!cell) continue;
     // Latest record on or before the date, with the engine's tie-breaking
     // (null day = end of month, later entries win ties).
     let anchor: { eff: number; day: number; value: number } | null = null;
     for (const o of data.overrides) {
       if (o.accountId !== a.id || o.monthKey !== monthKey) continue;
-      const oDay = clampDay(o.day);
+      const oDay = clampDay(o.day, monthKey);
       if (oDay > day) continue;
       const eff = o.day ?? 32;
       if (!anchor || eff >= anchor.eff) anchor = { eff, day: oDay, value: o.value };
@@ -415,7 +441,7 @@ export function balancesAtDate(
     const from = anchor?.day ?? 0;
     const base = anchor?.value ?? cell.start;
     const monthlyRate = annualToMonthly(rates[a.kind]);
-    const growth = base * (Math.pow(1 + monthlyRate, (day - from) / dim) - 1);
+    const growth = Math.max(0, base) * (Math.pow(1 + monthlyRate, (day - from) / dim) - 1);
     const f = monthFlows?.get(a.id);
     const contributions = (f?.contributionsByDay ?? [])
       .filter((c) => {

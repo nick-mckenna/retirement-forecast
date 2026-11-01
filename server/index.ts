@@ -44,6 +44,10 @@ function assertScenario(body: unknown): Scenario {
   if (!s || typeof s.id !== "string" || !s.people || !s.balances || !s.rates || !s.income || !s.strategy || !s.finalIncome) {
     throw Object.assign(new Error("Body is not a Scenario"), { status: 400 });
   }
+  if (typeof s.startDate !== "string") {
+    throw Object.assign(new Error("Scenario startDate must be a date string"), { status: 400 });
+  }
+  // migrateScenario repairs an empty/invalid date, so one is never stored.
   return migrateScenario(s);
 }
 
