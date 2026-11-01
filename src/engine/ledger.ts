@@ -1,4 +1,5 @@
 import type { PersonId } from "../model/types";
+import { parseDate, taxYearStartYear } from "../tax/taxYear";
 
 export type RowType = "BALANCE" | "TRANSACTION";
 
@@ -33,3 +34,33 @@ export function emptyPersonColumns(): PersonColumns {
 }
 
 export const PERSON_IDS: PersonId[] = ["nick", "tracy"];
+
+/** One tax year's income per person, plus the household total. */
+export interface AnnualIncome {
+  taxYearStart: number;
+  nick: number;
+  tracy: number;
+  total: number;
+}
+
+/**
+ * Totals the ledger's per-person Income column for each tax year (6 Apr → 5 Apr) — the Ledger
+ * tab's Income columns summed over the year: each person's share of the drawn income target,
+ * their State Pension and, in its year, the one-off final income. Only TRANSACTION rows carry
+ * income (BALANCE snapshots hold 0). Returns one entry per year in `taxYears`, in that order;
+ * rows dated outside those years are ignored.
+ */
+export function incomeByTaxYear(rows: LedgerRow[], taxYears: number[]): AnnualIncome[] {
+  const byYear = new Map<number, AnnualIncome>(
+    taxYears.map((y) => [y, { taxYearStart: y, nick: 0, tracy: 0, total: 0 }]),
+  );
+  for (const r of rows) {
+    if (r.type !== "TRANSACTION") continue;
+    const entry = byYear.get(taxYearStartYear(parseDate(r.dateIso)));
+    if (!entry) continue;
+    entry.nick += r.nick.income;
+    entry.tracy += r.tracy.income;
+  }
+  for (const e of byYear.values()) e.total = e.nick + e.tracy;
+  return taxYears.map((y) => byYear.get(y)!);
+}

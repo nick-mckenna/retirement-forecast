@@ -4,6 +4,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
@@ -13,15 +14,21 @@ import {
   YAxis,
 } from "recharts";
 import type { SimResult } from "../engine/simulate";
+import { incomeByTaxYear } from "../engine/ledger";
 import type { Scenario } from "../model/types";
 
 const axisStyle = { fontSize: 11, fill: "#93a4b3" };
 const gbpTick = (v: number) => `£${Math.round(v / 1000)}k`;
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+function Panel({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
   return (
     <div className="card">
       <h2>{title}</h2>
+      {note && (
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+          {note}
+        </p>
+      )}
       <div style={{ width: "100%", height: 260 }}>
         <ResponsiveContainer>{children as any}</ResponsiveContainer>
       </div>
@@ -46,6 +53,16 @@ export function Charts({ result, scenario }: { result: SimResult; scenario: Scen
     [`${nickName} CGT`]: Math.round(y.tax.nick.cgt),
     [`${tracyName} income tax`]: Math.round(y.tax.tracy.incomeTax),
     [`${tracyName} CGT`]: Math.round(y.tax.tracy.cgt),
+  }));
+
+  const income = incomeByTaxYear(
+    result.rows,
+    result.years.map((y) => y.taxYearStart),
+  ).map((y) => ({
+    year: y.taxYearStart,
+    nick: Math.round(y.nick),
+    tracy: Math.round(y.tracy),
+    total: Math.round(y.total),
   }));
 
   const comp = result.rows
@@ -96,6 +113,22 @@ export function Charts({ result, scenario }: { result: SimResult; scenario: Scen
           <Area type="monotone" dataKey="Gilts" stackId="1" stroke="#ffb454" fill="#ffb45455" />
           <Area type="monotone" dataKey="Savings" stackId="1" stroke="#ff6b6b" fill="#ff6b6b55" />
         </AreaChart>
+      </Panel>
+
+      <Panel
+        title="Annual income by person"
+        note="The Ledger's Income column totalled per tax year: each person's share of the income target plus their State Pension. The first year also includes the one-off final income."
+      >
+        <ComposedChart data={income} barGap={2}>
+          <CartesianGrid stroke="#2c3e4f" />
+          <XAxis dataKey="year" tick={axisStyle} />
+          <YAxis tickFormatter={gbpTick} tick={axisStyle} width={54} />
+          <Tooltip formatter={(v: number) => `£${v.toLocaleString()}`} contentStyle={{ background: "#17212b", border: "1px solid #2c3e4f" }} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar dataKey="nick" name={nickName} fill="#4da3ff" radius={[4, 4, 0, 0]} maxBarSize={12} />
+          <Bar dataKey="tracy" name={tracyName} fill="#c98bff" radius={[4, 4, 0, 0]} maxBarSize={12} />
+          <Line type="monotone" dataKey="total" name="Household total" stroke="#2ecc9b" dot={false} strokeWidth={2} />
+        </ComposedChart>
       </Panel>
 
       <Panel title="Annual tax by person">
