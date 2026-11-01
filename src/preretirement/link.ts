@@ -1,9 +1,9 @@
 // The handoff between the pre-retirement projection and the retirement
 // forecast. Pure, like project.ts. The rule that prevents double counting:
-// the projection for a linked scenario ends at the last full month strictly
-// BEFORE the scenario's startDate month; the retirement engine owns
-// everything from startDate onwards, so tagged flows in that month or later
-// never reach the handoff balances.
+// the linked scenario's starting balances are the projection sampled at the
+// END of its startDate (everything up to and including that day: growth, and
+// flows due by then); the retirement engine owns everything from the next day,
+// so nothing is lost or counted twice — even for a mid-month start.
 //
 // Accounts aggregate into retirement pots by (owner, kind): isa→isa,
 // pension→pension, gia→gia (with the tracked cost basis turned into
@@ -14,17 +14,22 @@ import type { PersonId, Scenario, StartingBalances } from "../model/types";
 import type { ExpenseMonth } from "../model/expenseTypes";
 import type { PreRetirementData } from "../model/preRetirementTypes";
 import { PERSON_IDS } from "../model/preRetirementTypes";
-import { addMonths, monthLabel } from "../expenses/calc";
+import { monthLabel } from "../expenses/calc";
 import { isIsoDate } from "../tax/taxYear";
-import { projectAccounts, ratesForKinds, type PreRetirementResult } from "./project";
+import {
+  projectAccounts,
+  ratesForKinds,
+  sampleAtDate,
+  type DateSample,
+  type PreRetirementResult,
+} from "./project";
 
-/** End of the last full month strictly before startDate's month:
- *  "2033-04-05" → "2033-03". (Sliced from the ISO string, not via Date, so
- *  the result never depends on the machine's timezone.) Null when the start
- *  date isn't a valid date (e.g. the date field was cleared). */
+/** The month the projection must run to: the one containing startDate, the handoff day
+ *  ("2033-04-05" → "2033-04"). Sliced from the ISO string, so it never depends on the
+ *  machine's timezone. Null when the start date isn't a valid date (e.g. it was cleared). */
 export function handoffMonthKey(scenarioStartDate: string): string | null {
   if (!isIsoDate(scenarioStartDate)) return null;
-  return addMonths(scenarioStartDate.slice(0, 7), -1);
+  return scenarioStartDate.slice(0, 7);
 }
 
 /** True when nothing has been entered in the registry yet: every opening balance, every
@@ -37,41 +42,40 @@ export function isUnconfigured(pre: PreRetirementData, result: PreRetirementResu
   return !last || Object.values(last.byAccount).every((c) => c.end === 0);
 }
 
-/** Aggregate the projection's final month into retirement starting balances
- *  by (owner, kind). Assumes the projection was run with the handoff month as
- *  its endMonth (resolveLinkedBalances guarantees this). A pot driven below zero
- *  is clamped to 0 (the retirement engine assumes non-negative pots), with a warning. */
+/** Aggregate the projection sampled on the handoff day into retirement starting balances
+ *  by (owner, kind). A pot driven below zero is clamped to 0 (the retirement engine assumes
+ *  non-negative pots), with a warning. */
 export function handoffBalances(
   result: PreRetirementResult,
+  sample: DateSample,
 ): { balances: Record<PersonId, StartingBalances>; warnings: string[] } | null {
-  const last = result.months[result.months.length - 1];
-  if (!last) return null;
+  if (result.months.length === 0) return null;
   const out = {} as Record<PersonId, StartingBalances>;
   for (const p of PERSON_IDS) {
     out[p] = { isa: 0, pension: 0, gia: 0, savings: 0, gilts: 0, giaGainFraction: 0 };
   }
   const giaBasis: Record<PersonId, number> = { nick: 0, tracy: 0 };
   for (const a of result.accounts) {
-    const cell = last.byAccount[a.id];
-    if (!cell) continue;
+    const value = sample.balances[a.id];
+    if (value == null) continue;
     const pots = out[a.owner];
     switch (a.kind) {
       case "isa":
-        pots.isa += cell.end;
+        pots.isa += value;
         break;
       case "pension":
-        pots.pension += cell.end;
+        pots.pension += value;
         break;
       case "gia":
-        pots.gia += cell.end;
-        giaBasis[a.owner] += last.basis[a.id] ?? 0;
+        pots.gia += value;
+        giaBasis[a.owner] += sample.basis[a.id] ?? 0;
         break;
       case "savings":
       case "premiumBonds":
-        pots.savings += cell.end;
+        pots.savings += value;
         break;
       case "gilts":
-        pots.gilts += cell.end;
+        pots.gilts += value;
         break;
     }
   }
@@ -128,8 +132,9 @@ export function resolveLinkedBalances(
       ],
     };
   }
-  const result = projectAccounts(pre, expenseMonths, ratesForKinds(scenario.rates), endMonth);
-  const handoff = handoffBalances(result);
+  const rates = ratesForKinds(scenario.rates);
+  const result = projectAccounts(pre, expenseMonths, rates, endMonth);
+  const handoff = handoffBalances(result, sampleAtDate(result, pre, expenseMonths, rates, scenario.startDate));
   if (!handoff) {
     return {
       balances: scenario.balances,

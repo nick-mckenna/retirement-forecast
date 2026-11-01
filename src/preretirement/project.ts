@@ -403,21 +403,52 @@ export function balancesAtDate(
   rates: KindRates,
   dateIso: string,
 ): Record<string, number> {
-  const out: Record<string, number> = {};
+  return sampleAtDate(result, data, expenseMonths, rates, dateIso).balances;
+}
+
+/** A projection sampled at the end of one day: each account's balance and, for GIA
+ *  accounts, its cost basis (for the CGT handoff). */
+export interface DateSample {
+  balances: Record<string, number>;
+  basis: Record<string, number>;
+}
+
+/** `balancesAtDate` plus the GIA cost basis on that day. The basis follows the same
+ *  intra-month model: the previous month-end basis, plus contributions due by the day, less
+ *  the basis taken out by the month's withdrawals (which move at the start of the month).
+ *  Recorded balances never change the basis. At a month's last day it equals the month's
+ *  basis exactly. */
+export function sampleAtDate(
+  result: PreRetirementResult,
+  data: PreRetirementData,
+  expenseMonths: ExpenseMonth[],
+  rates: KindRates,
+  dateIso: string,
+): DateSample {
+  const balances: Record<string, number> = {};
+  const basis: Record<string, number> = {};
   const first = result.months[0];
   const last = result.months[result.months.length - 1];
-  if (!first || !last) return out;
+  if (!first || !last) return { balances, basis };
+  const openingBasis = (a: InvestmentAccount) => a.openingBalance * (1 - clamp01(a.openingGainFraction ?? 0));
   const monthKey = dateIso.slice(0, 7);
   if (monthKey < first.key) {
-    for (const [id, cell] of Object.entries(first.byAccount)) out[id] = cell.start;
-    return out;
+    for (const a of result.accounts) {
+      balances[a.id] = first.byAccount[a.id].start;
+      if (a.kind === "gia") basis[a.id] = openingBasis(a);
+    }
+    return { balances, basis };
   }
   if (monthKey > last.key) {
-    for (const [id, cell] of Object.entries(last.byAccount)) out[id] = cell.end;
-    return out;
+    for (const a of result.accounts) {
+      balances[a.id] = last.byAccount[a.id].end;
+      if (a.kind === "gia") basis[a.id] = last.basis[a.id] ?? 0;
+    }
+    return { balances, basis };
   }
-  const month = result.months.find((m) => m.key === monthKey);
-  if (!month) return out; // unreachable: every month in the range is emitted
+  const monthIdx = result.months.findIndex((m) => m.key === monthKey);
+  const month = result.months[monthIdx];
+  if (!month) return { balances, basis }; // unreachable: every month in the range is emitted
   const dim = daysInMonth(monthKey);
   const day = clampDay(Number(dateIso.slice(8, 10)) || null, monthKey);
   const { flows } = monthlyFlows(
@@ -443,7 +474,8 @@ export function balancesAtDate(
     const monthlyRate = annualToMonthly(rates[a.kind]);
     const growth = Math.max(0, base) * (Math.pow(1 + monthlyRate, (day - from) / dim) - 1);
     const f = monthFlows?.get(a.id);
-    const contributions = (f?.contributionsByDay ?? [])
+    const byDay = f?.contributionsByDay ?? [];
+    const contributions = byDay
       .filter((c) => {
         const d = c.day ?? 1;
         return d > from && d <= day;
@@ -452,7 +484,19 @@ export function balancesAtDate(
     // Income lines carry no due day: they move at the start of the month, so
     // they are gone by any sampled day and inside any anchor.
     const withdrawals = anchor ? 0 : (f?.withdrawals ?? 0);
-    out[a.id] = base + growth + contributions - withdrawals;
+    balances[a.id] = base + growth + contributions - withdrawals;
+
+    if (a.kind === "gia") {
+      const prevBasis = monthIdx > 0 ? (result.months[monthIdx - 1].basis[a.id] ?? 0) : openingBasis(a);
+      const allContribs = f?.contributions ?? 0;
+      const dueContribs = byDay.filter((c) => (c.day ?? 1) <= day).reduce((s, c) => s + c.amount, 0);
+      const W = f?.withdrawals ?? 0;
+      // Mirrors projectAccounts: withdrawals remove basis in proportion to the value sold.
+      const valueBeforeWithdrawal = cell.start + Math.max(0, cell.start) * monthlyRate + allContribs;
+      let b = prevBasis + dueContribs;
+      if (W > 0 && valueBeforeWithdrawal > 0) b -= W * ((prevBasis + allContribs) / valueBeforeWithdrawal);
+      basis[a.id] = Math.max(0, b);
+    }
   }
-  return out;
+  return { balances, basis };
 }

@@ -3,10 +3,9 @@ import type { PersonId, Scenario } from "../model/types";
 import { useStore } from "../store/scenarioStore";
 import { usePreRetirementStore } from "../store/preRetirementStore";
 import { useExpenseStore } from "../store/expenseStore";
-import { resolveLinkedBalances, handoffMonthKey } from "../preretirement/link";
-import { monthLabel } from "../expenses/calc";
+import { resolveLinkedBalances } from "../preretirement/link";
 import { investableAssets, resolveIncome } from "../model/incomeTargets";
-import { isIsoDate } from "../tax/taxYear";
+import { firstModelledTaxYear, isIsoDate } from "../tax/taxYear";
 import { money, pct } from "./format";
 
 /** A date input that only commits real dates. Clearing it, or a half-typed value, stays a
@@ -159,9 +158,8 @@ export function InputsPanel() {
         {lb ? (
           <>
             <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
-              Projected by the Pre-retirement module at end of{" "}
-              {monthLabel(handoffMonthKey(s.startDate) ?? s.startDate.slice(0, 7))}.
-              Savings includes Premium Bonds.
+              Projected by the Pre-retirement module as at the end of {s.startDate}. Savings includes
+              Premium Bonds.
             </p>
             <ValueRow label="ISA" value={money(lb.isa)} />
             <ValueRow label="Pension" value={money(lb.pension)} />
@@ -221,7 +219,10 @@ export function InputsPanel() {
         ) : (
           <NumField label="Base annual (yr 1)" value={s.income.baseAnnual} step={1000} onChange={(v) => update((sc) => (sc.income.baseAnnual = v))} />
         )}
-        <NumField label="Start year" value={s.income.startYear} onChange={(v) => update((sc) => (sc.income.startYear = v))} />
+        <ValueRow
+          label="Start year"
+          value={`${s.income.startYear}/${String(s.income.startYear + 1).slice(-2)} (from the start date)`}
+        />
         <NumField label="Years to model" value={s.income.years} onChange={(v) => update((sc) => (sc.income.years = v))} />
         <PctField label={s.income.mode === "swr" ? "Income growth (after yr 1)" : "Income growth"} value={s.income.growth} onChange={(v) => update((sc) => (sc.income.growth = v))} />
         {s.income.mode === "swr" && (
@@ -278,8 +279,18 @@ export function InputsPanel() {
         <DateField
           label="Model start date"
           value={s.startDate}
-          onChange={(v) => update((sc) => (sc.startDate = v))}
+          onChange={(v) =>
+            update((sc) => {
+              sc.startDate = v;
+              // The model starts the day after; its tax year is the income start year.
+              sc.income.startYear = firstModelledTaxYear(v);
+            })
+          }
         />
+        <p className="muted" style={{ fontSize: 12, margin: "0 0 8px" }}>
+          Starting balances are as at the end of this day; the forecast runs from the next day (a
+          mid-year start models a part first tax year).
+        </p>
         <div className="field">
           <label>Link to pre-retirement forecast</label>
           <input

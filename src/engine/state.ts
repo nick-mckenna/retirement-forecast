@@ -68,6 +68,33 @@ export function giltValue(state: SimState, holder?: PersonId): number {
     .reduce((s, g) => s + g.nominal, 0);
 }
 
+/** Sell up to `amount` (at par) of a person's gilts, nearest maturity first — used when cash
+ *  runs out before the year-end refill. Gilts are CGT-exempt, so there is no gain to report.
+ *  Returns the amount actually sold. */
+export function sellGilts(state: SimState, holder: PersonId, amount: number): number {
+  let remaining = amount;
+  const mine = state.gilts
+    .filter((g) => g.holder === holder)
+    .sort((a, b) => a.maturityYear - b.maturityYear);
+  for (const g of mine) {
+    if (remaining <= 0.005) break;
+    const take = Math.min(remaining, g.nominal);
+    g.cost -= g.cost * (take / g.nominal);
+    g.nominal -= take;
+    remaining -= take;
+  }
+  state.gilts = state.gilts.filter((g) => g.nominal > 0.005);
+  return amount - remaining;
+}
+
+/** The GIA's embedded gain as a fraction of its value (proportional cost method), i.e. the
+ *  share of any sale that is gain. 0 for an empty pot; never negative (a loss sells at 0 gain
+ *  for planning — the realised figure from sellGia still carries the loss). */
+export function giaGainFraction(acc: AccountState): number {
+  if (acc.gia <= 0) return 0;
+  return Math.min(1, Math.max(0, 1 - acc.giaBasis / acc.gia));
+}
+
 /** Sell `amount` of GIA for a person; returns realised gain using proportional cost. */
 export function sellGia(acc: AccountState, amount: number): { gain: number } {
   const sell = Math.min(amount, acc.gia);

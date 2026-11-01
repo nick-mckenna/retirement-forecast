@@ -4,19 +4,24 @@ import { resolveIncome, targetForYear } from "../model/incomeTargets";
 import { personYearTax } from "../tax/personTax";
 import { statePensionForYear } from "../tax/statePension";
 import { resolveTaxParams } from "../tax/taxParams";
-import { ageAtTaxYearStart, addMonths, parseDate, toIso } from "../tax/taxYear";
+import { ageAtTaxYearStart, ageOn, addMonths, modelStartDate, parseDate, toIso } from "../tax/taxYear";
 import { bufferTarget, currentBuffer } from "../strategy/buffer";
 import { makePlan, raiseCash, raiseCashMarginal, type Withdrawal } from "../strategy/drawdown";
 import { planGiltPurchases } from "../strategy/giltLadder";
 import { emptyPersonColumns, type LedgerRow, type PersonColumns } from "./ledger";
-import { giltValue, initState, sellGia, type SimState } from "./state";
+import { giaGainFraction, giltValue, initState, sellGia, sellGilts, type SimState } from "./state";
 
 const PERSONS: PersonId[] = ["nick", "tracy"];
 
 export interface PersonTax {
   incomeTax: number;
   cgt: number;
+  /** The full liability for the year (income tax + CGT) — what "total tax" sums. */
   total: number;
+  /** Tax already deducted at source this year (PAYE on the final employment income). */
+  paidAtSource: number;
+  /** total − paidAtSource: what is settled from cash at year end (negative = a refund). */
+  due: number;
   taxableNonSavings: number;
   savingsIncome: number;
   dividends: number;
@@ -31,6 +36,8 @@ export interface YearDisposals {
   isaFill: Record<PersonId, number>;
   /** Gilts redeemed at par during the year (CGT-exempt). */
   giltMaturities: Record<PersonId, number>;
+  /** Gilts sold early (at par) because cash ran out before the year-end refill. */
+  giltSales: Record<PersonId, number>;
   /** Total capital gain realised on GIA disposals (sales + Bed & ISA). */
   realisedGain: Record<PersonId, number>;
 }
@@ -54,6 +61,7 @@ function newDisposals(): YearDisposals {
     sales: { nick: { pension: 0, gia: 0, isa: 0 }, tracy: { pension: 0, gia: 0, isa: 0 } },
     isaFill: { nick: 0, tracy: 0 },
     giltMaturities: { nick: 0, tracy: 0 },
+    giltSales: { nick: 0, tracy: 0 },
     realisedGain: { nick: 0, tracy: 0 },
   };
 }
@@ -87,20 +95,34 @@ function shortDateIso(iso: string): string {
 }
 
 interface Accum {
+  /** Taxable non-savings income from sales/earnings (pension drawdown, final salary). */
   taxableNonSavings: Record<PersonId, number>;
+  /** State Pension actually credited this year (only the modelled months). */
+  statePension: Record<PersonId, number>;
   savingsIncome: Record<PersonId, number>;
   dividends: Record<PersonId, number>;
   realisedGain: Record<PersonId, number>;
+  /** Tax deducted at source (PAYE on the final salary). */
+  paidAtSource: Record<PersonId, number>;
 }
 
 function newAccum(): Accum {
   return {
     taxableNonSavings: { nick: 0, tracy: 0 },
+    statePension: { nick: 0, tracy: 0 },
     savingsIncome: { nick: 0, tracy: 0 },
     dividends: { nick: 0, tracy: 0 },
     realisedGain: { nick: 0, tracy: 0 },
+    paidAtSource: { nick: 0, tracy: 0 },
   };
 }
+
+type Deltas = Partial<Record<PersonId, Partial<PersonColumns>>>;
+const addDelta = (d: Deltas, id: PersonId, col: keyof PersonColumns, v: number): void => {
+  if (v === 0) return;
+  const row = (d[id] ??= {});
+  row[col] = (row[col] ?? 0) + v;
+};
 
 export function simulate(scenario: Scenario): SimResult {
   const state = initState(scenario);
@@ -120,8 +142,18 @@ export function simulate(scenario: Scenario): SimResult {
   const mInv = annualToMonthly(scenario.rates.investmentGrowth);
   const mSav = annualToMonthly(scenario.rates.savingsInterest);
   const startDate = parseDate(scenario.startDate);
+  // The model runs from the day after the starting balances; the income start year is the
+  // tax year that day falls in (resolveIncome derives it), so a mid-year start gives a part
+  // first year rather than skipped or double-counted months.
+  const modelStart = modelStartDate(scenario.startDate);
   const income = resolveIncome(scenario);
   const modelStartYear = income.startYear;
+  if (scenario.income.startYear !== income.startYear) {
+    warnings.push(
+      `The income start year (${scenario.income.startYear}) didn't match the start date — modelling from ` +
+        `${income.startYear}/${String(income.startYear + 1).slice(2)}, the tax year after ${scenario.startDate}.`,
+    );
+  }
   const overrideMap = new Map(scenario.overrides.map((o) => [o.key, o.amount]));
   const purchases = (scenario.purchases ?? []).map((pp) => ({ ...pp, at: parseDate(pp.date).getTime() }));
   const handledPurchases = new Set<string>();
@@ -173,23 +205,41 @@ export function simulate(scenario: Scenario): SimResult {
   // --- Starting position ---
   balanceRow("Starting Balances", toIso(startDate));
 
-  // --- One-off final employment income (tax already paid) ---
+  // --- One-off final employment income ---
+  // Received in a modelled month, it is earnings of that tax year: the gross (net + PAYE)
+  // counts towards the year's income — so pension drawn that year is taxed on top of it —
+  // and the PAYE already deducted is credited against the year's bill. Received before the
+  // model starts, its tax is outside the plan and only the net cash arrives.
   const fi = scenario.finalIncome;
-  for (const id of PERSONS) state.balances[id].savings += fi.perPerson[id].net;
-  txRow("Final Income", fi.date, {
+  const fiAt = parseDate(fi.date).getTime();
+  const fiRow = (): Deltas => ({
     nick: { income: fi.perPerson.nick.net, savings: fi.perPerson.nick.net, tax: fi.perPerson.nick.tax },
     tracy: { income: fi.perPerson.tracy.net, savings: fi.perPerson.tracy.net, tax: fi.perPerson.tracy.tax },
   });
-  balanceRow("After Final Income", fi.date);
+  let finalIncomeHandled = PERSONS.every((id) => fi.perPerson[id].net === 0 && fi.perPerson[id].tax === 0);
+  if (!finalIncomeHandled && fiAt < modelStart.getTime()) {
+    for (const id of PERSONS) state.balances[id].savings += fi.perPerson[id].net;
+    txRow("Final Income", fi.date, fiRow());
+    balanceRow("After Final Income", fi.date);
+    finalIncomeHandled = true;
+  }
 
   // --- Annual loop over tax years ---
   for (let i = 0; i < income.years; i++) {
     const y = income.startYear + i;
     const p = resolveTaxParams(scenario.taxParams, y, scenario.taxPolicy, scenario.rates.inflation);
     const yearStart = new Date(Date.UTC(y, 3, 6)); // 6 April y
+    const yearEnd = new Date(Date.UTC(y + 1, 3, 5)); // 5 April y+1
     const accum = newAccum();
     const withdrawals: Withdrawal[] = [];
     const disposals = newDisposals();
+
+    // A part first year (the model starts after 6 April): months before the start are
+    // already behind the starting balances. The year-start events happen on the first day.
+    let firstMonth = 0;
+    while (firstMonth < 12 && addMonths(yearStart, firstMonth).getTime() < modelStart.getTime()) firstMonth++;
+    const yearFraction = (12 - firstMonth) / 12;
+    const openIso = toIso(firstMonth === 0 ? yearStart : modelStart);
 
     // State pension (annual figure; credited monthly below).
     const statePension: Record<PersonId, number> = {
@@ -204,10 +254,12 @@ export function simulate(scenario: Scenario): SimResult {
     const applyPlanned = (planned: Withdrawal[], label: string, dateIso: string) => {
       const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
       for (const w of planned) {
-        applyWithdrawal(state, w);
+        // The gain actually realised comes from the tracked cost basis (proportional method).
+        w.realisedGain = applyWithdrawal(state, w);
         accum.taxableNonSavings[w.person] += w.taxableNonSavings;
         accum.realisedGain[w.person] += w.realisedGain;
-        if (w.source !== "gilt") disposals.sales[w.person][w.source] += w.gross;
+        if (w.source === "gilt") disposals.giltSales[w.person] += w.gross;
+        else disposals.sales[w.person][w.source] += w.gross;
         withdrawals.push(w);
         const d = (deltas[w.person] ??= {});
         d.savings = (d.savings ?? 0) + w.gross;
@@ -217,10 +269,16 @@ export function simulate(scenario: Scenario): SimResult {
       if (planned.length) txRow(label, dateIso, deltas);
     };
 
-    const buildPlans = () => ({
-      nick: mkPlan("nick", scenario, y, statePension.nick + accum.taxableNonSavings.nick, p, accum.savingsIncome.nick + accum.dividends.nick),
-      tracy: mkPlan("tracy", scenario, y, statePension.tracy + accum.taxableNonSavings.tracy, p, accum.savingsIncome.tracy + accum.dividends.tracy),
-    });
+    /** Fresh per-person sale plans for a sale on `onDate`, from the year's income so far. */
+    const buildPlans = (onDate: Date) => {
+      const plan = (id: PersonId) =>
+        mkPlan(id, scenario, state, onDate, p, {
+          nonSavings: accum.statePension[id] + accum.taxableNonSavings[id],
+          other: accum.savingsIncome[id] + accum.dividends[id],
+          gainSoFar: accum.realisedGain[id],
+        });
+      return { nick: plan("nick"), tracy: plan("tracy") };
+    };
 
     // This year's income tax + CGT per person from the accumulators so far, plus any `extra`
     // withdrawals not yet applied. Pure, so the year end can provision cash for the bill
@@ -236,7 +294,7 @@ export function simulate(scenario: Scenario): SimResult {
           extraGain += w.realisedGain;
         }
         const parts = {
-          nonSavings: accum.taxableNonSavings[id] + extraNonSavings + statePension[id],
+          nonSavings: accum.taxableNonSavings[id] + extraNonSavings + accum.statePension[id],
           savings: accum.savingsIncome[id],
           dividends: accum.dividends[id],
         };
@@ -246,6 +304,8 @@ export function simulate(scenario: Scenario): SimResult {
           incomeTax: t.incomeTax,
           cgt: t.cgt,
           total: t.total,
+          paidAtSource: round2(accum.paidAtSource[id]),
+          due: round2(t.total - accum.paidAtSource[id]),
           taxableNonSavings: round2(parts.nonSavings),
           savingsIncome: round2(parts.savings),
           dividends: round2(parts.dividends),
@@ -254,9 +314,10 @@ export function simulate(scenario: Scenario): SimResult {
       }
       return out;
     };
+    /** Cash the year's tax still takes at year end (after PAYE already paid at source). */
     const taxDue = (extra?: Withdrawal[]): number => {
       const t = assessTax(extra);
-      return t.nick.total + t.tracy.total;
+      return t.nick.due + t.tracy.due;
     };
 
     /**
@@ -268,7 +329,7 @@ export function simulate(scenario: Scenario): SimResult {
     const refillAmount = (target: number): number => {
       const sell = (t: number): Withdrawal[] => {
         if (t <= 1) return [];
-        const ctx = { plans: buildPlans(), config: scenario.strategy, year: y };
+        const ctx = { plans: buildPlans(yearEnd), config: scenario.strategy, year: y };
         return mode === "heuristic" ? raiseCash(state, t, ctx) : raiseCashMarginal(state, t, ctx);
       };
       const gapBeforeSale = target - currentBuffer(state);
@@ -284,7 +345,7 @@ export function simulate(scenario: Scenario): SimResult {
     /** Raise `target` cash by selling investments tax-efficiently; returns the gross raised. */
     const fundCash = (target: number, label: string, dateIso: string): number => {
       if (target <= 1) return 0;
-      const ctx = { plans: buildPlans(), config: scenario.strategy, year: y };
+      const ctx = { plans: buildPlans(parseDate(dateIso)), config: scenario.strategy, year: y };
       const planned =
         mode === "heuristic"
           ? raiseCash(state, target, ctx)
@@ -306,19 +367,19 @@ export function simulate(scenario: Scenario): SimResult {
         };
       }
       state.gilts = state.gilts.filter((g) => g.maturityYear > y);
-      txRow("Gilt Maturity", toIso(yearStart), deltas);
+      txRow("Gilt Maturity", openIso, deltas);
     }
 
-    // Gilt coupons (taxable savings income; paid into cash).
-    if (state.gilts.length > 0) {
+    // Gilt coupons (taxable savings income; paid into cash) — for the modelled part of the year.
+    if (state.gilts.length > 0 && yearFraction > 0) {
       const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
       for (const g of state.gilts) {
-        const coupon = g.nominal * g.couponRate;
+        const coupon = g.nominal * g.couponRate * yearFraction;
         state.balances[g.holder].savings += coupon;
         accum.savingsIncome[g.holder] += coupon;
         deltas[g.holder] = { savings: (deltas[g.holder]?.savings ?? 0) + coupon };
       }
-      if (Object.keys(deltas).length) txRow("Gilt Coupon", toIso(yearStart), deltas);
+      if (Object.keys(deltas).length) txRow("Gilt Coupon", openIso, deltas);
     }
 
     // Remaining ISA subscription allowance per person this tax year (consumed by Bed & ISA
@@ -342,12 +403,12 @@ export function simulate(scenario: Scenario): SimResult {
           any = true;
         }
       }
-      if (any) txRow("ISA Fill (Bed & ISA)", toIso(yearStart), deltas);
+      if (any) txRow("ISA Fill (Bed & ISA)", openIso, deltas);
     }
 
-    // --- 12 monthly steps ---
+    // --- Monthly steps (all 12, or those after the start in a part first year) ---
     const monthlyTarget = targetForYear(income, y) / 12;
-    for (let m = 0; m < 12; m++) {
+    for (let m = firstMonth; m < 12; m++) {
       const monthDate = addMonths(yearStart, m);
 
       // Growth on investments and savings interest.
@@ -367,33 +428,56 @@ export function simulate(scenario: Scenario): SimResult {
         accum.savingsIncome[id] += savG;
         // GIA dividend portion of the total return is taxable (assumed reinvested). A yield
         // is paid out pro rata, not compounded, so the monthly slice is simply yield / 12.
-        accum.dividends[id] += Math.max(0, acc.gia) * (scenario.rates.giaDividendYield / 12);
+        // Reinvesting it buys more holding, so it adds to the cost basis — otherwise it would
+        // be taxed again as a gain when sold.
+        const div = Math.max(0, acc.gia) * (scenario.rates.giaDividendYield / 12);
+        accum.dividends[id] += div;
+        acc.giaBasis += div;
         gd[id] = { isa: isaG, pension: penG, gia: giaG, savings: savG };
       }
       txRow("Growth", toIso(monthDate), gd);
 
-      // State pension credited monthly as cash. It is taxable non-savings income, but is
-      // added to the tax calc once via `statePension[id]` at year end (see below) — do NOT
-      // also accumulate it here, or it would be double-counted.
+      // State pension credited monthly as cash; taxable non-savings income for the year.
       if (statePension.nick > 0 || statePension.tracy > 0) {
         const sd: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
         for (const id of PERSONS) {
           const amt = statePension[id] / 12;
           if (amt > 0) {
             state.balances[id].savings += amt;
+            accum.statePension[id] += amt;
             sd[id] = { savings: amt, income: amt };
           }
         }
         txRow("State Pension", toIso(monthDate), sd);
       }
 
-      // Draw the monthly income need from the cash buffer (split evenly).
+      const nextMonth = addMonths(yearStart, m + 1).getTime();
+
+      // Final employment income landing this month: earnings of this tax year.
+      if (!finalIncomeHandled && fiAt >= monthDate.getTime() && fiAt < nextMonth) {
+        for (const id of PERSONS) {
+          const { net, tax } = fi.perPerson[id];
+          state.balances[id].savings += net;
+          accum.taxableNonSavings[id] += net + tax;
+          accum.paidAtSource[id] += tax;
+        }
+        txRow("Final Income", fi.date, fiRow());
+        finalIncomeHandled = true;
+      }
+
+      // Draw the monthly income need from the buffer (split evenly): cash first, then gilts.
+      // Each pot that moves is booked to its owner, the income to the person drawing.
       const perPerson = monthlyTarget / 2;
-      const inc: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
+      const inc: Deltas = {};
       for (const id of PERSONS) {
-        const drawn = drawFromBuffer(state, id, perPerson);
-        inc[id] = { income: drawn, savings: -drawn };
-        const short = perPerson - drawn;
+        const d = drawFromBuffer(state, id, perPerson);
+        addDelta(inc, id, "income", d.drawn);
+        for (const q of PERSONS) {
+          addDelta(inc, q, "savings", -d.cash[q]);
+          addDelta(inc, q, "giltsTotal", -d.gilts[q]);
+          disposals.giltSales[q] += d.gilts[q];
+        }
+        const short = perPerson - d.drawn;
         if (short > 0.01) {
           const s = shortfalls.get(y) ?? { amount: 0, firstMonthIso: toIso(monthDate) };
           s.amount += short;
@@ -404,7 +488,6 @@ export function simulate(scenario: Scenario): SimResult {
 
       // One-off purchases falling in this month: raise the cash by selling investments
       // (tax-efficiently, so the tax lands in this year), then pay the purchase out of cash.
-      const nextMonth = addMonths(yearStart, m + 1).getTime();
       for (const pur of purchases) {
         if (pur.at < monthDate.getTime() || pur.at >= nextMonth) continue;
         handledPurchases.add(pur.id);
@@ -425,10 +508,8 @@ export function simulate(scenario: Scenario): SimResult {
     }
 
     // --- Year-end (5 April y+1): refill buffer, buy gilts, compute tax ---
-    const yearEnd = new Date(Date.UTC(y + 1, 3, 5));
-
     if (scenario.strategy.autoStrategy) {
-      const plans = buildPlans();
+      const plans = buildPlans(yearEnd);
 
       // Refill so the buffer is back at target *after* this year's tax is paid from it —
       // otherwise it starts every year short by the tax bill and cash can run out before
@@ -441,7 +522,7 @@ export function simulate(scenario: Scenario): SimResult {
           mode === "heuristic"
             ? raiseCash(state, raise, ctx)
             : raiseCashMarginal(state, raise, ctx);
-        planned = applyOverrides(planned, overrideMap, y, scenario);
+        planned = applyOverrides(planned, overrideMap, y, state);
         applyPlanned(planned, "Refill: sell investments", toIso(yearEnd));
       }
 
@@ -485,8 +566,8 @@ export function simulate(scenario: Scenario): SimResult {
       // rung with cash they need for their own tax bill.
       const taxNow = assessTax();
       const purchases = planGiltPurchases(state, income, scenario.rates, scenario.strategy, y + 1, {
-        nick: taxNow.nick.total,
-        tracy: taxNow.tracy.total,
+        nick: Math.max(0, taxNow.nick.due),
+        tracy: Math.max(0, taxNow.tracy.due),
       });
       if (purchases.length) {
         const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
@@ -533,9 +614,11 @@ export function simulate(scenario: Scenario): SimResult {
     // --- Tax for the year ---
     const yearTax = assessTax();
     for (const id of PERSONS) disposals.realisedGain[id] = round2(accum.realisedGain[id]);
-    const paid = payTax(state, { nick: yearTax.nick.total, tracy: yearTax.tracy.total });
+    // Settle what is still due after PAYE (a negative amount is a refund into cash).
+    const paid = payTax(state, { nick: yearTax.nick.due, tracy: yearTax.tracy.due });
     const taxDeltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
-    for (const id of PERSONS) taxDeltas[id] = { savings: -paid[id], tax: yearTax[id].total };
+    // The Tax column sums to the year's liability: PAYE shows on the Final Income row, the rest here.
+    for (const id of PERSONS) taxDeltas[id] = { savings: -paid[id], tax: yearTax[id].due };
     txRow("Tax", toIso(yearEnd), taxDeltas);
     balanceRow("Year End", toIso(yearEnd));
 
@@ -560,6 +643,9 @@ export function simulate(scenario: Scenario): SimResult {
   }
 
   warnings.push(...shortfallWarnings(shortfalls));
+  if (!finalIncomeHandled) {
+    warnings.push(`The final income on ${fi.date} falls after the modelled period and is ignored.`);
+  }
   for (const pur of purchases) {
     if (handledPurchases.has(pur.id)) continue;
     warnings.push(
@@ -623,27 +709,36 @@ function lifetimeTopUp(
   return out;
 }
 
+/**
+ * A person's sale plan for a sale on `onDate`. Pension access is judged on that date (the
+ * year-end refill is on 5 April, so a birthday during the year counts); the GIA's gain
+ * fraction is the live one from its tracked cost basis; the CGT exempt amount is what the
+ * year's earlier disposals (Bed & ISA, purchases) have left.
+ */
 function mkPlan(
   id: PersonId,
   scenario: Scenario,
-  taxYearStart: number,
-  preexistingNonSavings: number,
+  state: SimState,
+  onDate: Date,
   p: ReturnType<typeof resolveTaxParams>,
-  otherIncome: number,
+  income: { nonSavings: number; other: number; gainSoFar: number },
 ) {
-  const acc = scenario.balances[id];
-  const age = ageAtTaxYearStart(scenario.people[id].dob, taxYearStart);
-  const accessible = age >= scenario.people[id].pensionAccessAge;
-  const gainFraction = acc.giaGainFraction;
-  return makePlan(id, accessible, preexistingNonSavings, gainFraction, p, otherIncome);
+  const accessible = ageOn(scenario.people[id].dob, onDate) >= scenario.people[id].pensionAccessAge;
+  const gainFraction = giaGainFraction(state.balances[id]);
+  return makePlan(id, accessible, income.nonSavings, gainFraction, p, income.other, income.gainSoFar);
 }
 
-function applyWithdrawal(state: SimState, w: Withdrawal): void {
+/** Apply a withdrawal to the balances; returns the capital gain it realised (GIA only, from
+ *  the tracked cost basis — gilts are CGT-exempt). */
+function applyWithdrawal(state: SimState, w: Withdrawal): number {
   const acc = state.balances[w.person];
+  let gain = 0;
   if (w.source === "pension") acc.pension -= w.gross;
   else if (w.source === "isa") acc.isa -= w.gross;
-  else if (w.source === "gia") sellGia(acc, w.gross);
+  else if (w.source === "gia") gain = sellGia(acc, w.gross).gain;
+  else if (w.source === "gilt") sellGilts(state, w.person, w.gross);
   acc.savings += w.gross;
+  return gain;
 }
 
 /**
@@ -656,6 +751,12 @@ function payTax(state: SimState, bill: Record<PersonId, number>): Record<PersonI
   const taken: Record<PersonId, number> = { nick: 0, tracy: 0 };
   const short: Record<PersonId, number> = { nick: 0, tracy: 0 };
   for (const id of PERSONS) {
+    if (bill[id] < 0) {
+      // A refund (PAYE overpaid at source) comes back into the person's own cash.
+      state.balances[id].savings -= bill[id];
+      taken[id] += bill[id];
+      continue;
+    }
     const own = Math.min(bill[id], Math.max(0, state.balances[id].savings));
     state.balances[id].savings -= own;
     taken[id] += own;
@@ -691,7 +792,7 @@ function applyOverrides(
   planned: Withdrawal[],
   overrides: Map<string, number>,
   year: number,
-  scenario: Scenario,
+  state: SimState,
 ): Withdrawal[] {
   const byKey = new Map<string, Withdrawal>();
   for (const w of planned) {
@@ -710,27 +811,41 @@ function applyOverrides(
       const amt = overrides.get(key)!;
       w.gross = amt;
       w.taxableNonSavings = w.source === "pension" ? amt * 0.75 : 0;
-      w.realisedGain = w.source === "gia" ? amt * scenario.balances[w.person].giaGainFraction : 0;
+      w.realisedGain = w.source === "gia" ? amt * giaGainFraction(state.balances[w.person]) : 0;
     }
   }
   return [...byKey.values()];
 }
 
-/** Draw a person's monthly income from cash: their own first, then their spouse's. Returns
- *  the amount actually drawn (the caller records any shortfall for the warning). */
-function drawFromBuffer(state: SimState, id: PersonId, amount: number): number {
-  const acc = state.balances[id];
-  const fromSelf = Math.min(amount, Math.max(0, acc.savings));
-  acc.savings -= fromSelf;
-  let remaining = amount - fromSelf;
-  if (remaining > 0.01) {
-    // Fall back to spouse's cash.
-    const other = id === "nick" ? "tracy" : "nick";
-    const fromOther = Math.min(remaining, Math.max(0, state.balances[other].savings));
-    state.balances[other].savings -= fromOther;
-    remaining -= fromOther;
+/**
+ * Draw a person's monthly income from the buffer: own cash, then the spouse's cash, then own
+ * gilts, then the spouse's gilts (sold at par, nearest maturity first) — gilts are part of the
+ * buffer precisely so income keeps flowing when cash runs out before the next refill. Returns
+ * the amount drawn and where it came from, so the ledger books each pot to its owner.
+ */
+function drawFromBuffer(
+  state: SimState,
+  id: PersonId,
+  amount: number,
+): { drawn: number; cash: Record<PersonId, number>; gilts: Record<PersonId, number> } {
+  const other: PersonId = id === "nick" ? "tracy" : "nick";
+  const cash: Record<PersonId, number> = { nick: 0, tracy: 0 };
+  const gilts: Record<PersonId, number> = { nick: 0, tracy: 0 };
+  let remaining = amount;
+  for (const who of [id, other]) {
+    if (remaining <= 0.005) break;
+    const take = Math.min(remaining, Math.max(0, state.balances[who].savings));
+    state.balances[who].savings -= take;
+    cash[who] += take;
+    remaining -= take;
   }
-  return amount - remaining;
+  for (const who of [id, other]) {
+    if (remaining <= 0.005) break;
+    const sold = sellGilts(state, who, remaining);
+    gilts[who] += sold;
+    remaining -= sold;
+  }
+  return { drawn: amount - remaining, cash, gilts };
 }
 
 function blankTax(): PersonTax {
@@ -738,6 +853,8 @@ function blankTax(): PersonTax {
     incomeTax: 0,
     cgt: 0,
     total: 0,
+    paidAtSource: 0,
+    due: 0,
     taxableNonSavings: 0,
     savingsIncome: 0,
     dividends: 0,

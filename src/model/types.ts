@@ -178,7 +178,7 @@ export interface Scenario {
   /**
    * When true, the starting balances (isa/pension/gia/savings/gilts +
    * giaGainFraction) are computed live from the pre-retirement projection
-   * sampled at `startDate` (savings + premium bonds merge into `savings`);
+   * sampled at the end of `startDate` (savings + premium bonds merge into `savings`);
    * the manual `balances` fields are kept but ignored while linked.
    */
   linkPreRetirement: boolean;

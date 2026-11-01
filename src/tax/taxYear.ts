@@ -34,6 +34,18 @@ export function taxYearStartYear(d: Date): number {
   return afterApr6 ? y : y - 1;
 }
 
+/** The model's first day: the day after `startDate`, the date of the "Starting Balances"
+ *  (balances are as at the end of that day). */
+export function modelStartDate(startDateIso: string): Date {
+  return new Date(parseDate(startDateIso).getTime() + 86_400_000);
+}
+
+/** The first modelled tax year — the one containing the model's first day. The income
+ *  start year is derived from this, so the two can never disagree. */
+export function firstModelledTaxYear(startDateIso: string): number {
+  return taxYearStartYear(modelStartDate(startDateIso));
+}
+
 /** Age in whole years on a given date. */
 export function ageOn(dobIso: string, on: Date): number {
   const dob = parseDate(dobIso);

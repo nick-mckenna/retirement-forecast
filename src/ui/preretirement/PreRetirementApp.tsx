@@ -60,7 +60,8 @@ export function PreRetirementApp() {
           ))}
         </div>
         <span className="muted" style={{ fontSize: 12 }}>
-          Runs to {monthLabel(endMonth)} — the month before “{scenario.name}” starts; growth uses that
+          Runs to {monthLabel(endMonth)} — “{scenario.name}” takes these balances as at the end of{" "}
+          {handoff ? scenario.startDate : "its start date"} and models from the next day; growth uses that
           scenario's rates.
         </span>
         <span style={{ flex: 1 }} />

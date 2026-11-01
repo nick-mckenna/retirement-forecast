@@ -7,6 +7,7 @@ import { defaultScenario } from "../model/defaults";
 import { migratePreRetirementData, migrateScenario } from "../model/migrate";
 import {
   balancesAtDate,
+  sampleAtDate,
   latestActualTotal,
   latestOverride,
   overrideDateIso,
@@ -449,15 +450,15 @@ describe("balancesAtDate", () => {
 });
 
 describe("handoff to the retirement forecast", () => {
-  it("hands off the month before the startDate month", () => {
-    expect(handoffMonthKey("2033-04-05")).toBe("2033-03");
-    expect(handoffMonthKey("2028-01-01")).toBe("2027-12");
+  it("projects through the startDate's own month (the handoff is the end of that day)", () => {
+    expect(handoffMonthKey("2033-04-05")).toBe("2033-04");
+    expect(handoffMonthKey("2028-01-01")).toBe("2028-01");
   });
 
   it("aggregates accounts by owner and kind: pensions sum, savings + premium bonds merge, gilts flow", () => {
     const scenario = defaultScenario();
     scenario.linkPreRetirement = true;
-    scenario.startDate = "2026-10-05"; // handoff month 2026-09
+    scenario.startDate = "2026-10-05"; // handoff: end of 5 October (3 months + 5/31 of October)
     const d = data([
       account({ id: "n-isa", kind: "isa", openingBalance: 100 }),
       account({ id: "n-pen-1", kind: "pension", openingBalance: 200 }),
@@ -469,15 +470,13 @@ describe("handoff to the retirement forecast", () => {
     ]);
     const { balances, warnings } = resolveLinkedBalances(scenario, d, []);
     const kinds = ratesForKinds(scenario.rates);
-    expect(balances.nick.isa).toBeCloseTo(grow(100, kinds.isa, 3 / 12), 6);
-    expect(balances.nick.pension).toBeCloseTo(grow(200 + 300, kinds.pension, 3 / 12), 6);
-    expect(balances.nick.savings).toBeCloseTo(
-      grow(400, kinds.savings, 3 / 12) + grow(50, kinds.premiumBonds, 3 / 12),
-      6,
-    );
-    expect(balances.nick.gilts).toBeCloseTo(grow(600, kinds.gilts, 3 / 12), 6);
+    const at = (v: number, rate: number) => grow(v, rate, 3 / 12) * (1 + annualToMonthly(rate)) ** (5 / 31);
+    expect(balances.nick.isa).toBeCloseTo(at(100, kinds.isa), 6);
+    expect(balances.nick.pension).toBeCloseTo(at(200 + 300, kinds.pension), 6);
+    expect(balances.nick.savings).toBeCloseTo(at(400, kinds.savings) + at(50, kinds.premiumBonds), 6);
+    expect(balances.nick.gilts).toBeCloseTo(at(600, kinds.gilts), 6);
     // Basis stays 7000 while the value grows, so the gain fraction rises.
-    const gia = grow(10000, kinds.gia, 3 / 12);
+    const gia = at(10000, kinds.gia);
     expect(balances.nick.gia).toBeCloseTo(gia, 6);
     expect(balances.nick.giaGainFraction).toBeCloseTo((gia - 7000) / gia, 8);
     expect(balances.tracy.pension).toBe(0);
@@ -515,7 +514,10 @@ describe("handoff to the retirement forecast", () => {
     const d = data([account({ id: "t-pb", owner: "tracy", kind: "premiumBonds", openingBalance: 1000 })]);
     const { scenario: out } = resolveScenarioForRun(scenario, d, []);
     expect(out).not.toBe(scenario);
-    expect(out.balances.tracy.savings).toBeCloseTo(grow(1000, 0.035, 2 / 12), 6);
+    expect(out.balances.tracy.savings).toBeCloseTo(
+      grow(1000, 0.035, 2 / 12) * (1 + annualToMonthly(0.035)) ** (5 / 30),
+      6,
+    );
     expect(out.balances.nick.isa).toBe(0); // projection replaces ALL pots, not just tagged ones
   });
 });
@@ -601,13 +603,14 @@ describe("guard rails", () => {
   it("hands off a duplicated account id once", () => {
     const scenario = defaultScenario();
     scenario.linkPreRetirement = true;
-    scenario.startDate = "2026-08-05"; // handoff month 2026-07 = the opening month
+    scenario.startDate = "2026-08-05"; // end of 5 August: July + 5/31 of August
     const d = data([
       account({ id: "dup", kind: "isa", openingBalance: 100 }),
       account({ id: "dup", kind: "isa", openingBalance: 999, name: "copy" }),
     ]);
     const { balances, warnings } = resolveLinkedBalances(scenario, d, []);
-    expect(balances.nick.isa).toBeCloseTo(grow(100, ratesForKinds(scenario.rates).isa, 1 / 12), 6);
+    const r = ratesForKinds(scenario.rates).isa;
+    expect(balances.nick.isa).toBeCloseTo(grow(100, r, 1 / 12) * (1 + annualToMonthly(r)) ** (5 / 31), 6);
     expect(warnings.some((w) => w.includes("Duplicate"))).toBe(true);
   });
 
@@ -658,5 +661,43 @@ describe("guard rails", () => {
     const s = defaultScenario();
     s.startDate = "";
     expect(migrateScenario(s).startDate).toBe(`${s.income.startYear}-04-05`);
+  });
+});
+
+describe("handoff on the start date itself", () => {
+  it("includes flows due by the end of the start date and none after it", () => {
+    const scenario = defaultScenario();
+    scenario.linkPreRetirement = true;
+    scenario.startDate = "2028-04-05";
+    const d = data([account({ id: "isa", kind: "isa", openingBalance: 1000 })], "2028-04");
+    const months = [month("2028-04", { expense: [["isa", 500, 0, 3], ["isa", 300, 0, 20]] })];
+    const { balances } = resolveLinkedBalances(scenario, d, months);
+    const r = ratesForKinds(scenario.rates).isa;
+    // 1,000 grown for 5/30 of April, plus the 3 April contribution; the 20 April one is the engine's.
+    expect(balances.nick.isa).toBeCloseTo(1000 * (1 + annualToMonthly(r)) ** (5 / 30) + 500, 6);
+  });
+
+  it("hands the GIA cost basis off as at the start date", () => {
+    const scenario = defaultScenario();
+    scenario.linkPreRetirement = true;
+    scenario.startDate = "2028-04-10";
+    const d = data([account({ id: "gia", kind: "gia", openingBalance: 10000, openingGainFraction: 0.5 })], "2028-04");
+    const months = [month("2028-04", { expense: [["gia", 1000, 0, 5], ["gia", 2000, 0, 25]] })];
+    const { balances } = resolveLinkedBalances(scenario, d, months);
+    // Basis 5,000 + the 5 April contribution (the 25 April one comes after the handoff).
+    const basis = 6000;
+    expect(balances.nick.giaGainFraction).toBeCloseTo((balances.nick.gia - basis) / balances.nick.gia, 8);
+  });
+
+  it("samples the basis at a month's last day equal to the projection's month-end basis", () => {
+    const d = data([account({ id: "gia", kind: "gia", openingBalance: 10000, openingGainFraction: 0.3 })]);
+    const months = [
+      month("2026-07", { expense: [["gia", 800, 0, 12]] }),
+      month("2026-08", { expense: [["gia", 400, 0, 2]], income: [["gia", 1500]] }),
+    ];
+    const r = projectAccounts(d, months, RATES, "2026-08");
+    const s = sampleAtDate(r, d, months, RATES, "2026-08-31");
+    expect(s.basis["gia"]).toBeCloseTo(r.months[1].basis["gia"], 8);
+    expect(s.balances["gia"]).toBeCloseTo(r.months[1].byAccount["gia"].end, 8);
   });
 });

@@ -172,13 +172,16 @@ export function makePlan(
   gainFraction: number,
   p: TaxYearParams,
   otherIncome = 0,
+  /** Gains already realised this tax year (Bed & ISA, earlier sales): they use the CGT
+   *  exempt amount first, so "within the allowance" sales only get what is left. */
+  gainSoFar = 0,
 ): PersonPlan {
   return {
     person,
     pensionAccessible,
     runningNonSavings: preexistingNonSavings,
     otherIncome,
-    cgtAllowanceRemaining: p.cgtAnnualExempt,
+    cgtAllowanceRemaining: Math.max(0, p.cgtAnnualExempt - gainSoFar),
     gainFraction: Math.max(0, Math.min(1, gainFraction)),
     p,
   };

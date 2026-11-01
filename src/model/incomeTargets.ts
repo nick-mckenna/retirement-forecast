@@ -1,4 +1,5 @@
 import type { IncomeTargetConfig, Scenario } from "./types";
+import { firstModelledTaxYear, isIsoDate } from "../tax/taxYear";
 
 /** Investable assets that back a safe withdrawal rate: ISA + Pension + GIA (not savings/gilts). */
 export function investableAssets(scenario: Scenario): number {
@@ -13,13 +14,18 @@ export function investableAssets(scenario: Scenario): number {
 /**
  * Resolve the income config to a concrete base annual figure. In "swr" mode the year-1 target
  * is derived from the starting investable assets; the rest of the machinery (inflation, income
- * targets table, buffer) then works unchanged off `baseAnnual`.
+ * targets table, buffer) then works unchanged off `baseAnnual`. The start year is always the
+ * tax year the model's first day falls in (the day after `startDate`), never a separate input.
  */
 export function resolveIncome(scenario: Scenario): IncomeTargetConfig {
-  if (scenario.income.mode === "swr") {
-    return { ...scenario.income, baseAnnual: scenario.income.swrRate * investableAssets(scenario) };
+  const startYear = isIsoDate(scenario.startDate)
+    ? firstModelledTaxYear(scenario.startDate)
+    : scenario.income.startYear;
+  const income = { ...scenario.income, startYear };
+  if (income.mode === "swr") {
+    return { ...income, baseAnnual: income.swrRate * investableAssets(scenario) };
   }
-  return scenario.income;
+  return income;
 }
 
 export interface IncomeTargetRow {

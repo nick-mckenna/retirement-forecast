@@ -81,13 +81,22 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   resolved figure, so route new income logic through it. `Scenario.purchases` are one-off cash
   needs (house, car) funded in their month by the same tax-efficient sell path as the year-end
   refill (`applyPlanned`/`fundCash` in `simulate.ts`), so their tax lands in that year.
-- **The engine is a monthly ledger with an annual tax boundary.** For each UK tax year (6 Apr → 5 Apr)
-  it: does annual start events (gilt maturities → cash, gilt coupons, Bed & ISA fill), runs 12 monthly
-  steps (investment growth at the monthly S&S rate, savings interest, state pension, draw the monthly
-  income need from the cash buffer), then at year end runs the **buffer refill** (sell investments),
-  **gilt ladder** purchases, and finally computes income tax + CGT and posts it into the Nick/Tracy Tax
-  columns. Every emitted `LedgerRow` is either a `BALANCE` snapshot or a `TRANSACTION` delta, mirroring
-  the original spreadsheet's alternating structure.
+- **The engine is a monthly ledger with an annual tax boundary.** The model starts the **day after
+  `startDate`** (the "Starting Balances" date); `income.startYear` is derived from that
+  (`firstModelledTaxYear`, kept in sync by the UI and migration), so a mid-year start gives a part
+  first year. For each UK tax year (6 Apr → 5 Apr) it: does annual start events (gilt maturities →
+  cash, gilt coupons, Bed & ISA fill), runs the monthly steps (investment growth at the monthly S&S
+  rate, savings interest, state pension, the one-off final salary in its month, draw the monthly
+  income need — own cash, spouse's cash, then gilts sold at par), then at year end runs the
+  **buffer refill** (sell investments), **gilt ladder** purchases, and finally computes income tax +
+  CGT and settles it from cash. The final salary is earnings of its tax year: its gross counts
+  towards that year's income and the PAYE entered with it is credited (`PersonTax.paidAtSource`), so
+  the year end settles only `due = total − paidAtSource` (negative = refund). GIA gains always come
+  from the tracked cost basis (`giaBasis`, which reinvested dividends raise); sale plans see the live
+  gain fraction, the CGT exempt amount the year has left, and pension access on the sale date. Every
+  emitted `LedgerRow` is either a `BALANCE` snapshot or a `TRANSACTION` delta, mirroring the
+  original spreadsheet's alternating structure, and each delta is booked to the pot and person that
+  actually moved — `engineTimeline.test.ts` reconciles every balance row against the deltas.
 - **The refill provisions for the year's tax.** Tax is paid out of cash right after the refill, so
   `refillAmount` sizes the sale to the fixed point T = target − buffer + tax(after selling T) — the
   buffer lands on target *after* tax (lifetime mode re-runs it after crystallisation). Without this
@@ -155,9 +164,10 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   each person's GIA cost basis for the CGT handoff and reports `missingMonthKeys` /
   `unknownAccountIds` as warnings. `balancesAtDate` samples the end of any day (clamped to the
   range, re-anchored at recorded balances up to that day) for the Snapshot tab.
-- **Handoff** `src/preretirement/link.ts`: `handoffMonthKey(startDate)` = the month before the
-  scenario's start month — the projection ends there and the retirement engine owns everything
-  from `startDate`, which is the no-double-counting rule. `Scenario.linkPreRetirement` (toggle in
+- **Handoff** `src/preretirement/link.ts`: the projection runs through `startDate`'s month and is
+  sampled at the **end of `startDate`** (`sampleAtDate` → balances + GIA basis); the engine owns
+  everything from the next day, which is the no-double-counting rule (`handoffMonthKey` returns the
+  month the projection must reach; null for an invalid date). `Scenario.linkPreRetirement` (toggle in
   InputsPanel) makes `resolveScenarioForRun` replace the scenario's starting balances with the
   projection (savings + premiumBonds merge into `savings`; gilts flows; `giaGainFraction`
   computed from the tracked basis) before `RetirementApp` calls `runForecast` — the engine is
