@@ -22,6 +22,9 @@ interface PersonPlan {
   pensionAccessible: boolean;
   /** Running non-savings taxable income (state pension etc.) used to place band room. */
   runningNonSavings: number;
+  /** The year's savings income and dividends. They are taxed on top of non-savings income,
+   *  so they occupy the top of the bands: pension drawn "within a band" must leave room for them. */
+  otherIncome: number;
   cgtAllowanceRemaining: number;
   gainFraction: number;
   p: TaxYearParams;
@@ -41,13 +44,15 @@ interface Step {
   ) => { taxableNonSavings: number; realisedGain: number };
 }
 
-function pensionWithinBand(bandTop: number) {
+function pensionWithinBand(bandTop: number, netOfOtherIncome: boolean) {
   return (plan: PersonPlan, state: SimState) => {
     if (!plan.pensionAccessible) return 0;
     const pot = state.balances[plan.person].pension;
     if (pot <= 0) return 0;
-    // 75% of the gross is taxable; keep taxable within the band top.
-    const taxableRoom = Math.max(0, bandTop - plan.runningNonSavings);
+    // 75% of the gross is taxable; keep taxable within the band top. Above the personal
+    // allowance the year's savings and dividends stack on top, so they use up band room too.
+    const top = netOfOtherIncome ? bandTop - plan.otherIncome : bandTop;
+    const taxableRoom = Math.max(0, top - plan.runningNonSavings);
     const grossForRoom = taxableRoom / 0.75;
     return Math.min(pot, grossForRoom);
   };
@@ -86,8 +91,11 @@ function buildSteps(plans: Record<PersonId, PersonPlan>, config: StrategyConfig)
   for (const person of persons) {
     const p = plans[person].p;
     const paTop = p.personalAllowance;
-    const basicTop = p.personalAllowance + p.basicRateBand;
-    const higherTop = p.personalAllowance + p.basicRateBand + p.higherRateBand;
+    // Above the taper threshold the personal allowance is withdrawn £1 per £2 (an effective
+    // 60% band), so "within the band" draws stop there — once thresholds are indexed the
+    // basic-rate top can pass it. Only the last-resort step goes beyond.
+    const basicTop = Math.min(p.personalAllowance + p.basicRateBand, p.paTaperThreshold);
+    const higherTop = Math.min(p.personalAllowance + p.basicRateBand + p.higherRateBand, p.paTaperThreshold);
 
     // 1. Pension within personal allowance (0% on the taxable slice).
     if (config.fillPersonalAllowanceFromPension) {
@@ -95,7 +103,7 @@ function buildSteps(plans: Record<PersonId, PersonPlan>, config: StrategyConfig)
         person,
         source: "pension",
         priority: 10,
-        available: pensionWithinBand(paTop),
+        available: pensionWithinBand(paTop, false),
         effect: pensionEffect,
       });
     }
@@ -112,7 +120,7 @@ function buildSteps(plans: Record<PersonId, PersonPlan>, config: StrategyConfig)
       person,
       source: "pension",
       priority: 30,
-      available: pensionWithinBand(basicTop),
+      available: pensionWithinBand(basicTop, true),
       effect: pensionEffect,
     });
     // 4. GIA at the basic CGT rate.
@@ -136,7 +144,7 @@ function buildSteps(plans: Record<PersonId, PersonPlan>, config: StrategyConfig)
       person,
       source: "pension",
       priority: 70,
-      available: pensionWithinBand(higherTop),
+      available: pensionWithinBand(higherTop, true),
       effect: pensionEffect,
     });
     // 7. Pension beyond (additional rate) — last resort.
@@ -163,11 +171,13 @@ export function makePlan(
   preexistingNonSavings: number,
   gainFraction: number,
   p: TaxYearParams,
+  otherIncome = 0,
 ): PersonPlan {
   return {
     person,
     pensionAccessible,
     runningNonSavings: preexistingNonSavings,
+    otherIncome,
     cgtAllowanceRemaining: p.cgtAnnualExempt,
     gainFraction: Math.max(0, Math.min(1, gainFraction)),
     p,
@@ -231,17 +241,27 @@ export function raiseCash(
 // minimum for raising the required cash this tax year.
 
 function marginalIncomeRate(runningNonSavings: number, p: TaxYearParams): number {
-  if (runningNonSavings < p.personalAllowance) return 0;
-  if (runningNonSavings < p.personalAllowance + p.basicRateBand) return p.basicRate;
-  if (runningNonSavings < p.personalAllowance + p.basicRateBand + p.higherRateBand)
-    return p.higherRate;
-  return p.additionalRate;
+  // Personal allowance left at this income (withdrawn £1 per £2 above the taper threshold);
+  // bands are measured on taxable income, so the 45% rate starts at £125,140 *taxable*.
+  const pa = Math.max(0, p.personalAllowance - Math.max(0, (runningNonSavings - p.paTaperThreshold) / 2));
+  if (runningNonSavings < pa) return 0;
+  const taxable = runningNonSavings - pa;
+  let rate: number;
+  if (taxable < p.basicRateBand) rate = p.basicRate;
+  else if (taxable < p.basicRateBand + p.higherRateBand) rate = p.higherRate;
+  else rate = p.additionalRate;
+  // In the taper zone each extra £1 also removes 50p of allowance, taxed at the same rate.
+  const taperEnd = p.paTaperThreshold + 2 * p.personalAllowance;
+  if (runningNonSavings >= p.paTaperThreshold && runningNonSavings < taperEnd) rate *= 1.5;
+  return rate;
 }
 
 /** Marginal tax on the next £1 of *gross* raised from a source, at the plan's current state. */
 function marginalCost(source: Source, plan: PersonPlan): number {
   if (source === "isa" || source === "gilt") return 0;
-  if (source === "pension") return 0.75 * marginalIncomeRate(plan.runningNonSavings, plan.p);
+  // Savings and dividends sit on top of pension income, so the next £1 of pension is priced at
+  // the top of the stack (it pushes £1 of them up the bands).
+  if (source === "pension") return 0.75 * marginalIncomeRate(plan.runningNonSavings + plan.otherIncome, plan.p);
   // GIA: only the gain fraction is taxable, and only above the CGT annual exempt amount.
   if (plan.cgtAllowanceRemaining > 0.5) return 0;
   const cgtRate =

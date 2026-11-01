@@ -9,8 +9,10 @@ import type {
   Override,
   PersonId,
   Scenario,
-  TaxYearParams,
+  TaxPolicy,
+  TaxYearOverride,
 } from "../src/model/types";
+import { TAX_PARAM_FIELDS, type TaxParamFields } from "../src/tax/taxParams";
 
 export const PERSON_IDS: PersonId[] = ["nick", "tracy"];
 
@@ -44,8 +46,10 @@ export interface ScenarioRow {
   taxMode: string;
   lifetimeFillFraction: SqlNum | null;
   taxFreezeUntilYear: SqlNum;
+  taxIndexation: string;
   taxUprating: SqlNum;
   finalIncomeDate: SqlDate;
+  schemaVersion: SqlNum;
   sortOrder: number;
 }
 
@@ -67,28 +71,11 @@ export interface PersonRow {
   finalIncomeTax: SqlNum;
 }
 
-export interface TaxParamsRow {
-  scenarioId: string;
-  year: SqlNum;
-  personalAllowance: SqlNum;
-  paTaperThreshold: SqlNum;
-  basicRateBand: SqlNum;
-  higherRateBand: SqlNum;
-  basicRate: SqlNum;
-  higherRate: SqlNum;
-  additionalRate: SqlNum;
-  psaBasic: SqlNum;
-  psaHigher: SqlNum;
-  savingsStartingRateBand: SqlNum;
-  dividendAllowance: SqlNum;
-  dividendBasicRate: SqlNum;
-  dividendHigherRate: SqlNum;
-  dividendAdditionalRate: SqlNum;
-  cgtAnnualExempt: SqlNum;
-  cgtBasicRate: SqlNum;
-  cgtHigherRate: SqlNum;
-  isaAllowance: SqlNum;
-}
+/** One year's tax-parameter edits: a column per field, NULL where the user didn't edit it
+ *  (that field follows the projected default). */
+export type TaxParamsRow = { scenarioId: string; year: SqlNum } & {
+  [K in keyof TaxParamFields]: SqlNum | null;
+};
 
 export interface OverrideRow {
   scenarioId: string;
@@ -152,8 +139,10 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       taxMode: s.strategy.taxMode,
       lifetimeFillFraction: s.strategy.lifetimeFillFraction ?? null,
       taxFreezeUntilYear: s.taxPolicy.freezeUntilYear,
+      taxIndexation: s.taxPolicy.indexation,
       taxUprating: s.taxPolicy.uprating,
       finalIncomeDate: s.finalIncome.date,
+      schemaVersion: s.schemaVersion,
       sortOrder,
     },
     people: PERSON_IDS.map((pid) => ({
@@ -173,7 +162,11 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       finalIncomeNet: s.finalIncome.perPerson[pid].net,
       finalIncomeTax: s.finalIncome.perPerson[pid].tax,
     })),
-    taxParams: s.taxParams.map((tp) => ({ scenarioId: s.id, ...tp })),
+    taxParams: s.taxParams.map((tp) => {
+      const row = { scenarioId: s.id, year: tp.year } as TaxParamsRow;
+      for (const f of TAX_PARAM_FIELDS) row[f] = tp[f] ?? null;
+      return row;
+    }),
     overrides: s.overrides.map((o) => ({
       scenarioId: s.id,
       overrideKey: o.key,
@@ -255,31 +248,21 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
     },
     taxPolicy: {
       freezeUntilYear: num(sc.taxFreezeUntilYear),
+      // Rows written before indexation existed read as "custom"; migrateScenario re-derives
+      // the policy for those (schemaVersion 1) from their freeze year and uprating.
+      indexation: (sc.taxIndexation ?? "custom") as TaxPolicy["indexation"],
       uprating: num(sc.taxUprating),
     },
     taxParams: [...r.taxParams]
       .sort((a, b) => num(a.year) - num(b.year))
-      .map((tp): TaxYearParams => ({
-        year: num(tp.year),
-        personalAllowance: num(tp.personalAllowance),
-        paTaperThreshold: num(tp.paTaperThreshold),
-        basicRateBand: num(tp.basicRateBand),
-        higherRateBand: num(tp.higherRateBand),
-        basicRate: num(tp.basicRate),
-        higherRate: num(tp.higherRate),
-        additionalRate: num(tp.additionalRate),
-        psaBasic: num(tp.psaBasic),
-        psaHigher: num(tp.psaHigher),
-        savingsStartingRateBand: num(tp.savingsStartingRateBand),
-        dividendAllowance: num(tp.dividendAllowance),
-        dividendBasicRate: num(tp.dividendBasicRate),
-        dividendHigherRate: num(tp.dividendHigherRate),
-        dividendAdditionalRate: num(tp.dividendAdditionalRate),
-        cgtAnnualExempt: num(tp.cgtAnnualExempt),
-        cgtBasicRate: num(tp.cgtBasicRate),
-        cgtHigherRate: num(tp.cgtHigherRate),
-        isaAllowance: num(tp.isaAllowance),
-      })),
+      .map((tp): TaxYearOverride => {
+        const out: TaxYearOverride = { year: num(tp.year) };
+        for (const f of TAX_PARAM_FIELDS) {
+          const v = tp[f];
+          if (v != null) out[f] = num(v);
+        }
+        return out;
+      }),
     overrides: r.overrides.map((o): Override => ({ key: o.overrideKey, amount: num(o.amount) })),
     purchases: [...r.purchases]
       .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -289,6 +272,7 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
         date: iso(p.purchaseDate),
         amount: num(p.amount),
       })),
+    schemaVersion: num(sc.schemaVersion ?? 1),
   };
 
   if (sc.lifetimeFillFraction != null) {

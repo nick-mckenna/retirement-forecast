@@ -185,7 +185,7 @@ export function simulate(scenario: Scenario): SimResult {
   // --- Annual loop over tax years ---
   for (let i = 0; i < income.years; i++) {
     const y = income.startYear + i;
-    const p = resolveTaxParams(scenario.taxParams, y, scenario.taxPolicy);
+    const p = resolveTaxParams(scenario.taxParams, y, scenario.taxPolicy, scenario.rates.inflation);
     const yearStart = new Date(Date.UTC(y, 3, 6)); // 6 April y
     const accum = newAccum();
     const withdrawals: Withdrawal[] = [];
@@ -218,8 +218,8 @@ export function simulate(scenario: Scenario): SimResult {
     };
 
     const buildPlans = () => ({
-      nick: mkPlan("nick", scenario, y, statePension.nick + accum.taxableNonSavings.nick, p),
-      tracy: mkPlan("tracy", scenario, y, statePension.tracy + accum.taxableNonSavings.tracy, p),
+      nick: mkPlan("nick", scenario, y, statePension.nick + accum.taxableNonSavings.nick, p, accum.savingsIncome.nick + accum.dividends.nick),
+      tracy: mkPlan("tracy", scenario, y, statePension.tracy + accum.taxableNonSavings.tracy, p, accum.savingsIncome.tracy + accum.dividends.tracy),
     });
 
     // This year's income tax + CGT per person from the accumulators so far, plus any `extra`
@@ -629,12 +629,13 @@ function mkPlan(
   taxYearStart: number,
   preexistingNonSavings: number,
   p: ReturnType<typeof resolveTaxParams>,
+  otherIncome: number,
 ) {
   const acc = scenario.balances[id];
   const age = ageAtTaxYearStart(scenario.people[id].dob, taxYearStart);
   const accessible = age >= scenario.people[id].pensionAccessAge;
   const gainFraction = acc.giaGainFraction;
-  return makePlan(id, accessible, preexistingNonSavings, gainFraction, p);
+  return makePlan(id, accessible, preexistingNonSavings, gainFraction, p, otherIncome);
 }
 
 function applyWithdrawal(state: SimState, w: Withdrawal): void {

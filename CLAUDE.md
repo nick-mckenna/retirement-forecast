@@ -104,12 +104,22 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   engine calls these; they return plans, the engine applies them. Keep that boundary.
 - **Tax is its own layer** (`src/tax/`): `incomeTax.ts` implements the real UK ordering
   (non-savings → savings → dividends, with PA taper, savings starting-rate band + PSA, dividend
-  allowance); `cgt.ts` (gilts are intentionally CGT-exempt and must never be passed to it);
-  `statePension.ts`; `taxParams.ts` holds editable per-year thresholds (2025/26 baseline, frozen to
-  `Scenario.taxPolicy.freezeUntilYear` then grown by `taxPolicy.uprating` via
-  `projectTaxParams`/`resolveTaxParams`). `DEFAULT_TAX_POLICY` is **2031 / 0%** — thresholds are
-  static in cash terms unless the user sets an uprating, matching the current freeze; the State
-  Pension is uprated separately (by `rates.inflation`, for the triple lock) and is unaffected.
+  allowance; savings income has its own rates, which diverge from 2027/28); `cgt.ts` (gilts are
+  intentionally CGT-exempt and must never be passed to it); `personTax.ts` (`personYearTax` — income
+  tax + CGT for a person-year, the one calculation the engine's `assessTax` uses; CGT's lower-rate
+  band is `basicRateBand − taxableTotal`, since `taxableTotal` is already after the PA);
+  `statePension.ts`; `taxParams.ts` holds the per-year parameters: a 2025/26 baseline plus a
+  `BASELINE_SCHEDULE` of announced changes (each with its source), frozen to
+  `taxPolicy.freezeUntilYear` and then moved by `taxPolicy.indexation` via
+  `projectTaxParams(year, policy, inflation)`. `DEFAULT_TAX_POLICY` is **frozen to 2030/31, then
+  statutory** — the PA and basic band rise with `rates.inflation`, while the £125,140
+  additional-rate threshold, the £100k taper and other allowances stay fixed ("custom" uprates all
+  allowances by `uprating`). `TAX_PARAM_FIELDS` is the canonical field list (editor, mapping,
+  migration). User edits are **sparse**: `Scenario.taxParams` stores only edited fields per year
+  (NULL columns in SQL) and `resolveTaxParams` lays them over the projection. The State Pension is
+  uprated separately and is unaffected. One-off shape changes in `migrate.ts` are gated on
+  `Scenario.schemaVersion` (`SCHEMA_VERSION` in `defaults.ts`) so each runs once; v1 → v2 turned the
+  old `{2031, 0%}` default into statutory and reduced stored rows to their genuinely edited fields.
 
 ## Pre-retirement forecast
 

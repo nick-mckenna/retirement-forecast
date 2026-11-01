@@ -1,6 +1,9 @@
 import type { Scenario } from "./types";
 import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 
+/** Current `Scenario.schemaVersion`; `migrateScenario` upgrades anything older, once. */
+export const SCHEMA_VERSION = 2;
+
 /**
  * Default scenario — illustrative sample data only.
  * Replace these figures with your own; scenarios are saved to your local
@@ -68,5 +71,6 @@ export function defaultScenario(): Scenario {
     taxParams: [],
     overrides: [],
     purchases: [],
+    schemaVersion: SCHEMA_VERSION,
   };
 }

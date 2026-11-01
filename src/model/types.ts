@@ -47,15 +47,22 @@ export interface Rates {
 }
 
 /**
- * How the *default* (unedited) tax thresholds behave over time. Nothing rises while
- * `uprating` is 0, which is the safe planning assumption: the personal allowance and
- * the bands are frozen by policy until at least 2031, and the ISA and CGT allowances
- * are being treated the same way. Raise `uprating` to model them catching up again.
+ * How the *default* (unedited) tax thresholds behave over time. They are frozen up to
+ * `freezeUntilYear` (the current freeze runs to 5 April 2031, so 2030 = 2030/31 is the
+ * last frozen year), then move according to `indexation`.
  */
 export interface TaxPolicy {
-  /** Cash allowances are frozen up to and including this tax year. */
+  /** Thresholds are frozen up to and including this tax year. */
   freezeUntilYear: number;
-  /** Annual uprating applied to cash allowances after the freeze, e.g. 0.02. 0 = static. */
+  /**
+   * After the freeze:
+   * - "statutory": the personal allowance and basic-rate limit rise with `rates.inflation`
+   *   (the statutory default indexation); the £125,140 additional-rate threshold, the
+   *   £100,000 taper threshold and every other allowance stay fixed.
+   * - "custom": the cash allowances (but never those two fixed thresholds) rise by `uprating`.
+   */
+  indexation: "statutory" | "custom";
+  /** Annual uprating used by "custom" indexation, e.g. 0.02. 0 = static. */
   uprating: number;
 }
 
@@ -100,6 +107,11 @@ export interface TaxYearParams {
   psaHigher: number;
   /** Starting rate band for savings (0% band that reduces as non-savings income rises). */
   savingsStartingRateBand: number;
+  /** Savings income (interest, gilt coupons) beyond the 0% slices is taxed at these rates,
+   *  which diverge from the non-savings rates from 2027/28. */
+  savingsBasicRate: number;
+  savingsHigherRate: number;
+  savingsAdditionalRate: number;
   dividendAllowance: number;
   dividendBasicRate: number;
   dividendHigherRate: number;
@@ -182,9 +194,16 @@ export interface Scenario {
   };
   /** Freeze/uprating assumption behind the projected default tax parameters. */
   taxPolicy: TaxPolicy;
-  /** Editable per-year tax parameters. Missing years fall back to the projected default. */
-  taxParams: TaxYearParams[];
+  /** User edits to the tax parameters, per year and per field: only the fields the user
+   *  changed are stored; every other field follows the projected default (so edits keep
+   *  working when the policy or inflation assumption changes). */
+  taxParams: TaxYearOverride[];
   overrides: Override[];
   /** One-off large cash requirements (house purchase, car, etc.). */
   purchases: OneOffPurchase[];
+  /** Shape version of this saved scenario; `migrateScenario` upgrades older ones once. */
+  schemaVersion: number;
 }
+
+/** A sparse per-year edit of the tax parameters (see `Scenario.taxParams`). */
+export type TaxYearOverride = { year: number } & Partial<Omit<TaxYearParams, "year">>;

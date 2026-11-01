@@ -4,7 +4,7 @@ import { DEFAULT_TAX_POLICY, resolveTaxParams } from "../tax/taxParams";
 
 // 2025/26 England & Wales figures (PA 12,570; basic band 37,700; CGT exempt 3,000 at 18%/24%).
 // Hand-computed, synthetic amounts.
-const p = resolveTaxParams([], 2025, DEFAULT_TAX_POLICY);
+const p = resolveTaxParams([], 2025, DEFAULT_TAX_POLICY, 0);
 
 describe("personYearTax — CGT uses the basic band the income left (after the PA)", () => {
   it("splits gains across the remaining basic band and the higher rate", () => {

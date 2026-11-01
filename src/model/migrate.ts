@@ -1,4 +1,4 @@
-import type { PersonId, Scenario } from "./types";
+import type { PersonId, Scenario, TaxPolicy, TaxYearOverride } from "./types";
 import type { ExpenseData } from "./expenseTypes";
 import type { InvestmentAccount, PreAccountKind, PreRetirementData } from "./preRetirementTypes";
 import {
@@ -6,15 +6,29 @@ import {
   emptyPreRetirementData,
   PRE_ACCOUNT_KIND_LABELS,
 } from "./preRetirementTypes";
-import { defaultScenario } from "./defaults";
+import { defaultScenario, SCHEMA_VERSION } from "./defaults";
 import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 import { isIsoDate } from "../tax/taxYear";
 
 /**
  * Backfill fields added in later versions so older saved scenarios (from the
- * database, localStorage or an imported JSON backup) keep working.
+ * database, localStorage or an imported JSON backup) keep working. One-off shape
+ * changes are gated on `schemaVersion`, so each runs exactly once.
  */
 export function migrateScenario(s: Scenario): Scenario {
+  const version = s.schemaVersion ?? 1;
+  let taxPolicy: TaxPolicy;
+  let taxParams: TaxYearOverride[];
+  if (version < 2) {
+    ({ taxPolicy, taxParams } = migrateTaxV1(s));
+  } else {
+    taxPolicy = {
+      freezeUntilYear: s.taxPolicy?.freezeUntilYear ?? DEFAULT_TAX_POLICY.freezeUntilYear,
+      indexation: s.taxPolicy?.indexation ?? DEFAULT_TAX_POLICY.indexation,
+      uprating: s.taxPolicy?.uprating ?? DEFAULT_TAX_POLICY.uprating,
+    };
+    taxParams = s.taxParams ?? [];
+  }
   return {
     ...s,
     // A cleared/garbled start date has no handoff month and used to hang the projection:
@@ -23,14 +37,87 @@ export function migrateScenario(s: Scenario): Scenario {
     linkPreRetirement: s.linkPreRetirement ?? false,
     income: { ...s.income, mode: s.income.mode ?? "fixed", swrRate: s.income.swrRate ?? defaultScenario().income.swrRate },
     strategy: { ...s.strategy, taxMode: s.strategy.taxMode ?? "heuristic" },
-    taxPolicy: {
-      freezeUntilYear: s.taxPolicy?.freezeUntilYear ?? DEFAULT_TAX_POLICY.freezeUntilYear,
-      uprating: s.taxPolicy?.uprating ?? DEFAULT_TAX_POLICY.uprating,
-    },
-    taxParams: s.taxParams ?? [],
+    taxPolicy,
+    taxParams,
     overrides: s.overrides ?? [],
     purchases: s.purchases ?? [],
+    schemaVersion: SCHEMA_VERSION,
   };
+}
+
+// ---- v1 → v2: threshold policy + sparse tax-parameter edits --------------------------------
+
+type LegacyParams = Record<(typeof LEGACY_FIELDS)[number], number>;
+
+/** The v1 tax-parameter fields and their 2025/26 values, frozen here (not imported) so a v1
+ *  save's stored rows can always be compared with what v1 itself would have projected. */
+const LEGACY_BASE = {
+  personalAllowance: 12570,
+  paTaperThreshold: 100000,
+  basicRateBand: 37700,
+  higherRateBand: 87440,
+  basicRate: 0.2,
+  higherRate: 0.4,
+  additionalRate: 0.45,
+  psaBasic: 1000,
+  psaHigher: 500,
+  savingsStartingRateBand: 5000,
+  dividendAllowance: 500,
+  dividendBasicRate: 0.0875,
+  dividendHigherRate: 0.3375,
+  dividendAdditionalRate: 0.3935,
+  cgtAnnualExempt: 3000,
+  cgtBasicRate: 0.18,
+  cgtHigherRate: 0.24,
+  isaAllowance: 20000,
+} as const;
+const LEGACY_FIELDS = Object.keys(LEGACY_BASE) as (keyof typeof LEGACY_BASE)[];
+const LEGACY_UPRATED: (keyof typeof LEGACY_BASE)[] = [
+  "personalAllowance",
+  "basicRateBand",
+  "higherRateBand",
+  "psaBasic",
+  "psaHigher",
+  "savingsStartingRateBand",
+  "dividendAllowance",
+  "cgtAnnualExempt",
+  "isaAllowance",
+];
+
+function legacyProjection(year: number, freezeUntilYear: number, uprating: number): LegacyParams {
+  const p: LegacyParams = { ...LEGACY_BASE };
+  const n = year - freezeUntilYear;
+  if (n > 0 && uprating !== 0) {
+    for (const f of LEGACY_UPRATED) p[f] = Math.round(LEGACY_BASE[f] * Math.pow(1 + uprating, n));
+  }
+  return p;
+}
+
+/**
+ * v1 stored a policy of {freezeUntilYear, uprating} and *whole* rows for every edited year
+ * (a snapshot of the projection at the time, plus the edit). The untouched v1 default
+ * ({2031, 0}) becomes the new statutory default; any other policy is kept as "custom".
+ * Each stored row keeps only the fields that differ from v1's own projection — the real
+ * edits — so everything else now follows the projection; rows left empty are dropped.
+ */
+function migrateTaxV1(s: Scenario): { taxPolicy: TaxPolicy; taxParams: TaxYearOverride[] } {
+  const freeze = s.taxPolicy?.freezeUntilYear ?? 2031;
+  const uprating = s.taxPolicy?.uprating ?? 0;
+  const taxPolicy: TaxPolicy =
+    freeze === 2031 && uprating === 0
+      ? { ...DEFAULT_TAX_POLICY }
+      : { freezeUntilYear: freeze, indexation: "custom", uprating };
+  const taxParams: TaxYearOverride[] = [];
+  for (const row of s.taxParams ?? []) {
+    const projected = legacyProjection(row.year, freeze, uprating);
+    const sparse: TaxYearOverride = { year: row.year };
+    for (const f of LEGACY_FIELDS) {
+      const v = row[f];
+      if (typeof v === "number" && Math.abs(v - projected[f]) > 1e-9) sparse[f] = v;
+    }
+    if (Object.keys(sparse).length > 1) taxParams.push(sparse);
+  }
+  return { taxPolicy, taxParams };
 }
 
 /** Same idea for the expense tracker: tolerate data saved by older versions. */

@@ -45,6 +45,29 @@ function connectionString(database: string): string {
   ].join(";");
 }
 
+/** The ScenarioTaxYearParams value columns as first shipped (NOT NULL then), listed here
+ *  rather than derived so the upgrade guards stay a fixed historical record. */
+const LEGACY_TAX_PARAM_COLUMNS = [
+  "personalAllowance",
+  "paTaperThreshold",
+  "basicRateBand",
+  "higherRateBand",
+  "basicRate",
+  "higherRate",
+  "additionalRate",
+  "psaBasic",
+  "psaHigher",
+  "savingsStartingRateBand",
+  "dividendAllowance",
+  "dividendBasicRate",
+  "dividendHigherRate",
+  "dividendAdditionalRate",
+  "cgtAnnualExempt",
+  "cgtBasicRate",
+  "cgtHigherRate",
+  "isaAllowance",
+];
+
 /** One statement per entry; each is idempotent so bootstrap can run every start. */
 const SCHEMA: string[] = [
   `IF OBJECT_ID(N'dbo.Scenario', N'U') IS NULL
@@ -72,7 +95,9 @@ const SCHEMA: string[] = [
      lifetimeFillFraction FLOAT NULL,
      finalIncomeDate DATE NOT NULL,
      taxFreezeUntilYear INT NOT NULL CONSTRAINT DF_Scenario_taxFreezeUntilYear DEFAULT 2031,
+     taxIndexation NVARCHAR(10) NOT NULL CONSTRAINT DF_Scenario_taxIndexation DEFAULT N'custom',
      taxUprating FLOAT NOT NULL CONSTRAINT DF_Scenario_taxUprating DEFAULT 0,
+     schemaVersion INT NOT NULL CONSTRAINT DF_Scenario_schemaVersion DEFAULT 1,
      linkPreRetirement BIT NOT NULL CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0,
      sortOrder INT NOT NULL CONSTRAINT DF_Scenario_sortOrder DEFAULT 0,
      updatedAt DATETIME2 NOT NULL CONSTRAINT DF_Scenario_updatedAt DEFAULT SYSUTCDATETIME()
@@ -102,24 +127,28 @@ const SCHEMA: string[] = [
      scenarioId NVARCHAR(64) NOT NULL
        CONSTRAINT FK_ScenarioTaxYearParams_Scenario REFERENCES dbo.Scenario(id) ON DELETE CASCADE,
      year INT NOT NULL,
-     personalAllowance FLOAT NOT NULL,
-     paTaperThreshold FLOAT NOT NULL,
-     basicRateBand FLOAT NOT NULL,
-     higherRateBand FLOAT NOT NULL,
-     basicRate FLOAT NOT NULL,
-     higherRate FLOAT NOT NULL,
-     additionalRate FLOAT NOT NULL,
-     psaBasic FLOAT NOT NULL,
-     psaHigher FLOAT NOT NULL,
-     savingsStartingRateBand FLOAT NOT NULL,
-     dividendAllowance FLOAT NOT NULL,
-     dividendBasicRate FLOAT NOT NULL,
-     dividendHigherRate FLOAT NOT NULL,
-     dividendAdditionalRate FLOAT NOT NULL,
-     cgtAnnualExempt FLOAT NOT NULL,
-     cgtBasicRate FLOAT NOT NULL,
-     cgtHigherRate FLOAT NOT NULL,
-     isaAllowance FLOAT NOT NULL,
+     -- One column per parameter; NULL = not edited for this year (follows the projection).
+     personalAllowance FLOAT NULL,
+     paTaperThreshold FLOAT NULL,
+     basicRateBand FLOAT NULL,
+     higherRateBand FLOAT NULL,
+     basicRate FLOAT NULL,
+     higherRate FLOAT NULL,
+     additionalRate FLOAT NULL,
+     psaBasic FLOAT NULL,
+     psaHigher FLOAT NULL,
+     savingsStartingRateBand FLOAT NULL,
+     savingsBasicRate FLOAT NULL,
+     savingsHigherRate FLOAT NULL,
+     savingsAdditionalRate FLOAT NULL,
+     dividendAllowance FLOAT NULL,
+     dividendBasicRate FLOAT NULL,
+     dividendHigherRate FLOAT NULL,
+     dividendAdditionalRate FLOAT NULL,
+     cgtAnnualExempt FLOAT NULL,
+     cgtBasicRate FLOAT NULL,
+     cgtHigherRate FLOAT NULL,
+     isaAllowance FLOAT NULL,
      CONSTRAINT PK_ScenarioTaxYearParams PRIMARY KEY (scenarioId, year)
    )`,
   `IF OBJECT_ID(N'dbo.ScenarioOverride', N'U') IS NULL
@@ -234,6 +263,23 @@ const SCHEMA: string[] = [
   `IF COL_LENGTH(N'dbo.Scenario', N'taxUprating') IS NULL
    ALTER TABLE dbo.Scenario ADD taxUprating FLOAT NOT NULL
      CONSTRAINT DF_Scenario_taxUprating DEFAULT 0`,
+  // Existing rows default to "custom" / version 1; migrateScenario then re-derives the policy.
+  `IF COL_LENGTH(N'dbo.Scenario', N'taxIndexation') IS NULL
+   ALTER TABLE dbo.Scenario ADD taxIndexation NVARCHAR(10) NOT NULL
+     CONSTRAINT DF_Scenario_taxIndexation DEFAULT N'custom'`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'schemaVersion') IS NULL
+   ALTER TABLE dbo.Scenario ADD schemaVersion INT NOT NULL
+     CONSTRAINT DF_Scenario_schemaVersion DEFAULT 1`,
+  // Tax-parameter edits became sparse: every value column is nullable (NULL = not edited).
+  ...LEGACY_TAX_PARAM_COLUMNS.map(
+    (c) => `IF EXISTS (SELECT 1 FROM sys.columns
+                WHERE object_id = OBJECT_ID(N'dbo.ScenarioTaxYearParams') AND name = N'${c}' AND is_nullable = 0)
+   ALTER TABLE dbo.ScenarioTaxYearParams ALTER COLUMN [${c}] FLOAT NULL`,
+  ),
+  ...["savingsBasicRate", "savingsHigherRate", "savingsAdditionalRate"].map(
+    (c) => `IF COL_LENGTH(N'dbo.ScenarioTaxYearParams', N'${c}') IS NULL
+   ALTER TABLE dbo.ScenarioTaxYearParams ADD [${c}] FLOAT NULL`,
+  ),
   `IF COL_LENGTH(N'dbo.ExpenseTemplate', N'accountId') IS NULL
    ALTER TABLE dbo.ExpenseTemplate ADD accountId NVARCHAR(64) NULL`,
   `IF COL_LENGTH(N'dbo.ExpenseMonthItem', N'accountId') IS NULL

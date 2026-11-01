@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { computeIncomeTax } from "../tax/incomeTax";
 import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
 
-const p = projectTaxParams(2028, DEFAULT_TAX_POLICY); // frozen baseline: PA 12,570, basic band 37,700
+const p = projectTaxParams(2025, DEFAULT_TAX_POLICY, 0); // 2025/26 baseline: PA 12,570, basic band 37,700
 
 describe("income tax", () => {
   it("basic-rate employment/pension income", () => {
@@ -41,5 +41,30 @@ describe("income tax", () => {
     // taxable 102,430: 37,700@20=7,540 ; 64,730@40=25,892 ; total 33,432
     const r = computeIncomeTax({ nonSavings: 110000, savings: 0, dividends: 0 }, p);
     expect(r.tax).toBeCloseTo(33432, 2);
+  });
+});
+
+describe("computeIncomeTax — announced rate changes", () => {
+  it("taxes dividends at 10.75% / 35.75% from 2026/27", () => {
+    // £20,000 non-savings (7,430 @ 20% = 1,486) + £5,000 dividends: 500 free, 4,500 @ 10.75% = 483.75.
+    const p26 = projectTaxParams(2026, DEFAULT_TAX_POLICY, 0);
+    expect(p26.dividendAdditionalRate).toBe(0.3935); // unchanged
+    const r = computeIncomeTax({ nonSavings: 20000, savings: 0, dividends: 5000 }, p26);
+    expect(r.tax).toBeCloseTo(1486 + 483.75, 2);
+  });
+
+  it("taxes savings income at its own rates (24% basic) from 2027/28, not the non-savings 20%", () => {
+    // £20,000 non-savings (1,486) + £2,000 interest: PSA 1,000 free, 1,000 @ 24% = 240.
+    const p27 = projectTaxParams(2027, DEFAULT_TAX_POLICY, 0);
+    const r = computeIncomeTax({ nonSavings: 20000, savings: 2000, dividends: 0 }, p27);
+    expect(r.tax).toBeCloseTo(1486 + 240, 2);
+    expect(r.breakdown.savingsTax).toBeCloseTo(240, 2);
+  });
+
+  it("applies the savings higher rate (44%) above the basic band", () => {
+    // £60,000 non-savings fills the basic band; £3,000 interest: PSA (higher) 500 free, 2,500 @ 44%.
+    const p27 = projectTaxParams(2027, DEFAULT_TAX_POLICY, 0);
+    const r = computeIncomeTax({ nonSavings: 60000, savings: 3000, dividends: 0 }, p27);
+    expect(r.breakdown.savingsTax).toBeCloseTo(2500 * 0.44, 2);
   });
 });

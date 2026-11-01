@@ -97,14 +97,15 @@ export function computeIncomeTax(parts: IncomeParts, p: TaxYearParams): IncomeTa
     cum = s.cum;
   }
 
-  // --- Savings income: 0% portion (starting rate + PSA) first, then taxed at main rates ---
+  // --- Savings income: 0% portion (starting rate + PSA) first, then the savings rates ---
   {
     const zeroPortion = Math.min(savAfterPA, startingRateBand + psa);
     // 0% portion still occupies band space.
     cum += zeroPortion;
     const taxablePortion = savAfterPA - zeroPortion;
     const s = splitBands(taxablePortion, cum, p);
-    savingsTax = s.basic * p.basicRate + s.higher * p.higherRate + s.additional * p.additionalRate;
+    savingsTax =
+      s.basic * p.savingsBasicRate + s.higher * p.savingsHigherRate + s.additional * p.savingsAdditionalRate;
     cum = s.cum;
   }
 
