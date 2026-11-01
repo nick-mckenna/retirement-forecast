@@ -21,6 +21,13 @@ npx vitest run -t "higher-rate income spans two bands"
 
 There is no linter configured; `tsc --noEmit` is the type gate. Tests live in `src/__tests__/`.
 
+`dev`/`preview` call `tsx server/index.ts` directly inside `concurrently` rather than
+`npm run server` — on this Windows machine a nested npm shim exits while its child lives on, and
+`concurrently -k` then tears down the other process. Stopping a backgrounded `npm run dev` also
+orphans its node children (ports 5173/5174 stay bound). The project's `/verify` skill
+(`.claude/skills/verify/SKILL.md`) has the cleanup command and the end-to-end procedure: DB status
+chip, `sqlcmd` checks against the tables, and leaving the database clean afterwards.
+
 ## What this is
 
 A **local-first** SPA (React + TS + Vite) plus a small local persistence API — a small
@@ -68,6 +75,12 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   `annual` (marginal-cost greedy → minimises that year's tax), `lifetime` (searches how far to
   crystallise pension into the ISA each year to minimise total tax). See `src/strategy/drawdown.ts`
   (`raiseCash` vs `raiseCashMarginal`) and `optimiser.ts`.
+- **Income target**: `income.mode` is `fixed` (`baseAnnual`) or `swr` (`swrRate` × starting
+  ISA + pension + GIA). `resolveIncome` (`src/model/incomeTargets.ts`) turns either into a
+  `baseAnnual` that is then inflated yearly; the engine, Excel export and UI only ever see the
+  resolved figure, so route new income logic through it. `Scenario.purchases` are one-off cash
+  needs (house, car) funded in their month by the same tax-efficient sell path as the year-end
+  refill (`applyPlanned`/`fundCash` in `simulate.ts`), so their tax lands in that year.
 - **The engine is a monthly ledger with an annual tax boundary.** For each UK tax year (6 Apr → 5 Apr)
   it: does annual start events (gilt maturities → cash, gilt coupons, Bed & ISA fill), runs 12 monthly
   steps (investment growth at the monthly S&S rate, savings interest, state pension, draw the monthly
@@ -244,7 +257,14 @@ forecast:
   items with illustrative amounts, and all test fixtures use made-up figures. When adding tests or
   defaults, invent numbers — do not transcribe them from the spreadsheets or the database.
 - The Excel builder is split into a pure `buildWorkbook()` (DOM-free, unit-tested via round-trip) and a
-  thin `exportToExcel()` download wrapper — add new sheet logic in `buildWorkbook`.
+  thin `exportToExcel()` download wrapper — add new sheet logic in `buildWorkbook`. The
+  Pre-retirement Snapshot PDF (`src/export/snapshotPdf.ts`, jsPDF + autotable) follows the same
+  split (`buildSnapshotPdf` / `exportSnapshotPdf`), and its numbers come from
+  `buildSnapshotSummary` (`src/export/snapshotSummary.ts`), the one pure source that both the
+  on-screen `SnapshotView` and the PDF render from — change figures there, not in either view.
+- `PersonId` is the fixed pair `"nick" | "tracy"`: internal keys used throughout the model, the SQL
+  rows and the server's validation (account `owner`). Display names come from `Person.name`
+  ("Person A/B" in the defaults). Never rename the keys or add a third person casually.
 
 ## Disclaimer baked into the product
 
