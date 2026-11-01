@@ -1,30 +1,44 @@
-import type { Scenario } from "../model/types";
+import type { Scenario, StrategyConfig } from "../model/types";
 import { simulate, type SimResult } from "../engine/simulate";
+
+/** One candidate the lifetime search tried. */
+export interface SearchCandidate {
+  /** "heuristic" / "annual" = that mode's plan as is; "fill" = annual-mode sales plus proactive
+   *  crystallisation up to `fraction` of the basic-rate band each year. */
+  strategy: "heuristic" | "annual" | "fill";
+  fraction: number | null;
+  totalTax: number;
+}
 
 export interface ForecastOutcome {
   result: SimResult;
   /** Total tax across the whole forecast (income tax + CGT, both people). */
   totalTax: number;
   /**
-   * For lifetime mode: the chosen "fill fraction" of the basic-rate band, and the candidates
-   * that were searched (fraction -> total tax), so the UI can explain the optimisation.
+   * For lifetime mode: the winning candidate and every candidate searched, so the UI can
+   * explain the optimisation. `chosenFraction` is set only when a fill level won.
    */
+  chosen?: SearchCandidate;
   chosenFraction?: number;
-  search?: { fraction: number | null; totalTax: number }[];
+  search?: SearchCandidate[];
 }
 
 export function totalTaxOf(result: SimResult): number {
   return result.years.reduce((s, y) => s + y.tax.nick.total + y.tax.tracy.total, 0);
 }
 
-/** Candidate fill levels for the lifetime search: no top-up, then 0 (PA) .. 1 (top of basic band). */
-const LIFETIME_CANDIDATES: (number | null)[] = [null, 0, 0.25, 0.5, 0.75, 1];
+/** First pass over fill levels: 0 (the personal allowance) .. 1 (the top of the basic band). */
+const COARSE_FILLS = [0, 0.2, 0.4, 0.6, 0.8, 1];
+/** Then refine around the best one (the response is jagged, so a coarse grid alone misses). */
+const REFINE_STEPS = [-0.1, -0.05, 0.05, 0.1];
 
 /**
- * Run the forecast for a scenario. For "lifetime" tax mode this searches a family of
- * pension-crystallisation strategies (how far up the basic-rate band to fill each year) by
- * fully simulating each candidate, and returns the one with the lowest total lifetime tax.
- * For "heuristic"/"annual" it just simulates once.
+ * Run the forecast for a scenario. For "lifetime" tax mode this searches whole-plan strategies
+ * by fully simulating each — the rules-based plan, the annual optimiser, and the annual
+ * optimiser with proactive pension crystallisation filled to a range of basic-band fractions,
+ * refined around the best — and returns the one with the lowest total lifetime tax (the
+ * objective is lifetime tax, as chosen; deferred tax on pensions left at the horizon isn't in
+ * it). For "heuristic"/"annual" it just simulates once.
  */
 export function runForecast(scenario: Scenario): ForecastOutcome {
   if (scenario.strategy.taxMode !== "lifetime") {
@@ -32,20 +46,41 @@ export function runForecast(scenario: Scenario): ForecastOutcome {
     return { result, totalTax: totalTaxOf(result) };
   }
 
-  let best: ForecastOutcome | null = null;
-  const search: { fraction: number | null; totalTax: number }[] = [];
-  for (const fraction of LIFETIME_CANDIDATES) {
-    const candidate: Scenario = {
-      ...scenario,
-      strategy: { ...scenario.strategy, lifetimeFillFraction: fraction ?? undefined },
+  const search: SearchCandidate[] = [];
+  let best: { candidate: SearchCandidate; result: SimResult } | null = null;
+  const tried = new Set<string>();
+  const run = (strategy: SearchCandidate["strategy"], fraction: number | null) => {
+    const key = `${strategy}:${fraction ?? ""}`;
+    if (tried.has(key)) return;
+    tried.add(key);
+    const config: StrategyConfig = {
+      ...scenario.strategy,
+      taxMode: strategy === "heuristic" ? "heuristic" : "lifetime",
+      lifetimeFillFraction: fraction ?? undefined,
     };
-    const result = simulate(candidate);
-    const totalTax = totalTaxOf(result);
-    search.push({ fraction, totalTax });
-    if (!best || totalTax < best.totalTax) {
-      best = { result, totalTax, chosenFraction: fraction ?? undefined, search };
-    }
+    const result = simulate({ ...scenario, strategy: config });
+    const candidate: SearchCandidate = { strategy, fraction, totalTax: totalTaxOf(result) };
+    search.push(candidate);
+    if (!best || candidate.totalTax < best.candidate.totalTax - 0.005) best = { candidate, result };
+  };
+
+  run("heuristic", null);
+  run("annual", null);
+  for (const f of COARSE_FILLS) run("fill", f);
+  const bestFill = search
+    .filter((c) => c.strategy === "fill")
+    .reduce((a, b) => (b.totalTax < a.totalTax ? b : a));
+  for (const d of REFINE_STEPS) {
+    const f = Math.round(((bestFill.fraction ?? 0) + d) * 100) / 100;
+    if (f >= 0 && f <= 1) run("fill", f);
   }
-  best!.search = search;
-  return best!;
+
+  const { candidate, result } = best!;
+  return {
+    result,
+    totalTax: candidate.totalTax,
+    chosen: candidate,
+    chosenFraction: candidate.strategy === "fill" ? (candidate.fraction ?? undefined) : undefined,
+    search,
+  };
 }

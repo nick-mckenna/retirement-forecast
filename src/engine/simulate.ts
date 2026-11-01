@@ -595,53 +595,74 @@ export function simulate(scenario: Scenario): SimResult {
       balanceRow("Balance", toIso(monthDate));
     }
 
-    // --- Year-end (5 April y+1): refill buffer, buy gilts, compute tax ---
+    // --- Year-end (5 April y+1): crystallise, refill buffer, buy gilts, compute tax ---
     if (scenario.strategy.autoStrategy) {
-      const plans = buildPlans(yearEnd);
-
-      // Refill so the buffer is back at target *after* this year's tax is paid from it —
-      // otherwise it starts every year short by the tax bill and cash can run out before
-      // the next refill.
       const target = bufferTarget(netNeed, scenario.strategy, y + 1);
+
+      // 1. Proactive crystallisation, before the refill so one refill covers its tax: lifetime
+      //    mode fills each person's taxable income to the searched fraction of the basic band;
+      //    the heuristic's "fill the personal allowance" draws pension up to the allowance even
+      //    when the cash isn't needed. Either way the year's savings and dividends count towards
+      //    the ceiling, and the proceeds go to cash.
+      const fraction = scenario.strategy.lifetimeFillFraction;
+      const ceiling =
+        mode === "lifetime" && fraction != null && fraction >= 0
+          ? p.personalAllowance + fraction * p.basicRateBand
+          : mode === "heuristic" && scenario.strategy.fillPersonalAllowanceFromPension
+            ? p.personalAllowance
+            : null;
+      const crystallised: Record<PersonId, number> = { nick: 0, tracy: 0 };
+      if (ceiling != null) {
+        const topUp = lifetimeTopUp(state, buildPlans(yearEnd), ceiling);
+        const deltas: Deltas = {};
+        for (const w of topUp) {
+          const acc = state.balances[w.person];
+          acc.pension -= w.gross;
+          acc.lsaRemaining -= w.lsaUsed;
+          acc.savings += w.gross;
+          accum.taxableNonSavings[w.person] += w.taxableNonSavings;
+          disposals.sales[w.person].pension += w.gross;
+          withdrawals.push(w);
+          crystallised[w.person] += w.gross;
+          addDelta(deltas, w.person, "pension", -w.gross);
+          addDelta(deltas, w.person, "savings", w.gross);
+        }
+        if (topUp.length) txRow("Pension crystallisation", toIso(yearEnd), deltas);
+      }
+
+      // 2. Refill so the buffer is back at target *after* this year's tax is paid from it —
+      //    otherwise it starts every year short by the tax bill and cash can run out before
+      //    the next refill.
+      const plans = buildPlans(yearEnd);
       const raise = refillAmount(target);
       // Fixed (overridden) sales happen even when no refill is needed.
       const planned = refillSales(Math.max(0, raise), plans);
       if (planned.length) applyPlanned(planned, "Refill: sell investments", toIso(yearEnd));
 
-      // Lifetime mode: proactively crystallise pension up to a taxable-income target and
-      // shelter the net proceeds in the ISA (up to the remaining allowance), so pension is
-      // extracted at low rates over time rather than bunched into higher-rate years later.
-      const fraction = scenario.strategy.lifetimeFillFraction;
-      if (mode === "lifetime" && fraction != null && fraction >= 0) {
-        // Resolve the fill target against this year's bands, so it tracks them if the
-        // scenario's tax policy uprates them (frozen bands mean a fixed ceiling).
-        const ceiling = p.personalAllowance + fraction * p.basicRateBand;
-        const topUp = lifetimeTopUp(state, plans, ceiling);
-        const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
-        for (const w of topUp) {
-          const acc = state.balances[w.person];
-          acc.pension -= w.gross; // crystallise pension
-          acc.lsaRemaining -= w.lsaUsed;
-          accum.taxableNonSavings[w.person] += w.taxableNonSavings;
-          disposals.sales[w.person].pension += w.gross;
-          withdrawals.push(w);
-          // Shelter the proceeds in the ISA up to the remaining allowance; rest to cash.
-          const toIsa = Math.min(w.gross, isaRoom[w.person]);
+      // 3. Crystallised cash the buffer doesn't need is sheltered — the ISA up to its remaining
+      //    allowance, then the GIA at cost — rather than left idle as cash.
+      const surplus = Math.min(
+        crystallised.nick + crystallised.tracy,
+        currentBuffer(state) - target - Math.max(0, taxDue()),
+      );
+      if (surplus > 1) {
+        const deltas: Deltas = {};
+        const total = crystallised.nick + crystallised.tracy;
+        for (const id of PERSONS) {
+          const acc = state.balances[id];
+          const amount = Math.min(Math.max(0, acc.savings), surplus * (crystallised[id] / total));
+          if (amount <= 1) continue;
+          const toIsa = Math.min(amount, isaRoom[id]);
+          isaRoom[id] -= toIsa;
+          acc.savings -= amount;
           acc.isa += toIsa;
-          acc.savings += w.gross - toIsa;
-          isaRoom[w.person] -= toIsa;
-          const d = (deltas[w.person] ??= {});
-          d.pension = (d.pension ?? 0) - w.gross;
-          d.isa = (d.isa ?? 0) + toIsa;
-          d.savings = (d.savings ?? 0) + (w.gross - toIsa);
+          acc.gia += amount - toIsa;
+          acc.giaBasis += amount - toIsa;
+          addDelta(deltas, id, "savings", -amount);
+          addDelta(deltas, id, "isa", toIsa);
+          addDelta(deltas, id, "gia", amount - toIsa);
         }
-        if (topUp.length) {
-          txRow("Pension crystallisation -> ISA", toIso(yearEnd), deltas);
-          // The crystallisation is taxable too, and mostly sheltered in the ISA rather than
-          // left as cash — top the buffer up for that extra tax the same way.
-          const extra = refillAmount(target);
-          if (extra > 1) fundCash(extra, "Refill: tax on crystallisation", toIso(yearEnd));
-        }
+        if (Object.keys(deltas).length) txRow("Shelter surplus cash (ISA, then GIA)", toIso(yearEnd), deltas);
       }
 
       // Gilt ladder purchases (cash -> gilts). Each person's tax is paid from their cash just
@@ -760,9 +781,10 @@ function shortfallWarnings(shortfalls: Map<number, { amount: number; firstMonthI
 }
 
 /**
- * Lifetime mode: draw each accessible person's pension up to a taxable-income `ceiling`
- * (beyond what the refill already drew), so unused low-rate band each year is used to
- * extract pension. Returns the extra pension withdrawals (the caller shelters the cash).
+ * Proactive crystallisation: draw each accessible person's pension until their taxable
+ * income (non-savings plus the year's savings and dividends) reaches `ceiling`, so unused
+ * low-rate band each year is used to extract pension. Returns the withdrawals; the caller
+ * banks the cash, refills, then shelters any surplus.
  */
 function lifetimeTopUp(
   state: SimState,
@@ -773,7 +795,8 @@ function lifetimeTopUp(
   for (const id of PERSONS) {
     const plan = plans[id];
     if (!plan.pensionAccessible) continue;
-    const room = ceiling - plan.runningNonSavings;
+    // Savings and dividends count towards the ceiling too: they sit on top of the pension.
+    const room = ceiling - plan.runningNonSavings - plan.otherIncome;
     if (room <= 1) continue;
     const pot = state.balances[id].pension;
     if (pot <= 1) continue;

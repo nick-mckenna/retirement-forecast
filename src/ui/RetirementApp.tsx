@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useStore } from "../store/scenarioStore";
 import { usePreRetirementStore } from "../store/preRetirementStore";
 import { useExpenseStore } from "../store/expenseStore";
@@ -42,7 +42,10 @@ export function RetirementApp() {
     [stored, preData, expenseMonths],
   );
   const scenario = resolved.scenario;
-  const outcome = useMemo(() => runForecast(scenario), [scenario]);
+  // The lifetime search runs a dozen full simulations; deferring it keeps typing in the inputs
+  // responsive (React shows the previous forecast until the new one is ready).
+  const deferredScenario = useDeferredValue(scenario);
+  const outcome = useMemo(() => runForecast(deferredScenario), [deferredScenario]);
   const result = outcome.result;
 
   const warnings = [...resolved.warnings, ...result.warnings];
@@ -68,11 +71,14 @@ export function RetirementApp() {
 
         {scenario.strategy.taxMode === "lifetime" && outcome.search && (
           <div className="warn-banner" style={{ background: "#12302a", borderColor: "var(--accent-2)", color: "var(--accent-2)" }}>
-            Lifetime optimiser: searched {outcome.search.length} crystallisation strategies and chose{" "}
-            {outcome.chosenFraction == null
-              ? "no proactive pension crystallisation"
-              : `filling to ${Math.round(outcome.chosenFraction * 100)}% of the basic-rate band each year`}{" "}
-            → lowest total tax {money(outcome.totalTax)}.
+            Lifetime optimiser: searched {outcome.search.length} whole-plan strategies and chose{" "}
+            {outcome.chosen?.strategy === "heuristic"
+              ? "the rules-based plan"
+              : outcome.chosen?.strategy === "annual"
+                ? "the annual optimiser with no proactive pension crystallisation"
+                : `crystallising pension up to ${Math.round((outcome.chosenFraction ?? 0) * 100)}% of the basic-rate band each year`}{" "}
+            → lowest total tax {money(outcome.totalTax)}. (It minimises lifetime tax; tax still due on pensions
+            left at the end isn't counted.)
           </div>
         )}
 

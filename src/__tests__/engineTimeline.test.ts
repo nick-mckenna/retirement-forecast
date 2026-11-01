@@ -185,7 +185,8 @@ describe("user overrides are fixed refill sales", () => {
     s.overrides = [{ key: "2029:tracy:pension", amount: 30_000 }];
     const r = simulate(s);
     const y = r.years.find((x) => x.taxYearStart === 2029)!;
-    expect(y.disposals.sales.tracy.pension).toBeCloseTo(30_000, 6);
+    const refill = r.rows.find((x) => x.label === "Refill: sell investments" && x.dateIso === "2030-04-05")!;
+    expect(-refill.tracy.pension).toBeCloseTo(30_000, 6); // the refill's sale from that pot is exactly the override
     expect(y.bufferEnd).toBeCloseTo(y.bufferTargetValue, 0); // the tax provision saw the override
   });
 
@@ -220,5 +221,47 @@ describe("user overrides are fixed refill sales", () => {
       { key: "2030:nick:pension", amount: 1500 },
       { key: "2031:tracy:gia", amount: 200 },
     ]);
+  });
+});
+
+describe("proactive crystallisation", () => {
+  it("counts the year's savings and dividends towards the fill ceiling", () => {
+    const s = defaultScenario();
+    s.strategy.taxMode = "lifetime";
+    s.strategy.lifetimeFillFraction = 0; // ceiling = the personal allowance
+    s.balances.tracy.savings = 2_000_000; // ~£70k of interest: no room left under the allowance
+    const r = simulate(s);
+    // In every year her interest alone fills the allowance, there is no room to crystallise.
+    const full = r.years.filter((y) => y.tax.tracy.savingsIncome >= 12_570);
+    expect(full.length).toBeGreaterThan(5);
+    for (const y of full) {
+      expect(y.withdrawals.some((w) => w.decisionKey === "topup:tracy"), String(y.taxYearStart)).toBe(false);
+    }
+  });
+
+  it("fills the personal allowance from pension every year when the heuristic is asked to", () => {
+    const s = defaultScenario();
+    s.rates.savingsInterest = 0;
+    s.rates.giaDividendYield = 0;
+    s.rates.giltCoupon = 0;
+    s.finalIncome.perPerson.tracy = { net: 0, tax: 0 };
+    const pa = (y: number) => y; // the allowance is frozen at £12,570 through 2030/31
+    const r = simulate(s);
+    // Person B can access her pension from the start and has no State Pension until 2037.
+    for (const y of r.years.filter((x) => x.taxYearStart <= 2030)) {
+      expect(y.tax.tracy.taxableNonSavings, String(pa(y.taxYearStart))).toBeGreaterThanOrEqual(12_570 - 1);
+    }
+  });
+
+  it("shelters crystallised cash the buffer doesn't need, leaving it on target", () => {
+    const s = defaultScenario();
+    s.strategy.taxMode = "lifetime";
+    s.strategy.lifetimeFillFraction = 1;
+    const r = simulate(s);
+    expect(r.rows.some((x) => x.label.startsWith("Shelter surplus cash"))).toBe(true);
+    for (const y of r.years.slice(1)) {
+      expect(y.bufferEnd, String(y.taxYearStart)).toBeLessThanOrEqual(y.bufferTargetValue + 1);
+    }
+    expectLedgerReconciles(r.rows);
   });
 });

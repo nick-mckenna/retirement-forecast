@@ -68,16 +68,22 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   same `SimResult` out. The UI does not call it directly — it calls **`runForecast(scenario)`**
   (`src/strategy/optimiser.ts`) inside a single `useMemo` in `src/ui/RetirementApp.tsx`
   (on the scenario resolved by `resolveScenarioForRun`, see "Handoff" below). `runForecast` calls
-  `simulate` once for `heuristic`/`annual` tax modes; for `lifetime` mode it simulates several
-  candidate pension-crystallisation strategies and returns the lowest-total-tax one. Keep the engine
-  pure and side-effect free.
+  `simulate` once for `heuristic`/`annual` tax modes; for `lifetime` mode it fully simulates ~12
+  whole-plan candidates (the rules-based plan, the annual optimiser, and annual-mode sales plus
+  crystallisation filled to 0–100% of the basic band, refined ±0.05/±0.1 around the best) and
+  returns the lowest-total-tax one (`RetirementApp` defers it with `useDeferredValue`). Keep the
+  engine pure and side-effect free.
 - **`strategy.taxMode` selects how investments are sold**: `heuristic` (fixed priority list; its
   band tops are net of the year's savings and dividends and stop at the £100k taper), `annual`
   (`raiseCashMarginal`: exact-cost segment greedy that minimises that year's tax — every candidate
   sale is priced with `personYearTax` in chunks up to the next kink in the rates, ties going to the
   allowances that expire this year (pension, then GIA) before the ISA; deliberately myopic, so it
   spends the tax-free ISA before 20% pension), `lifetime` (searches how far to crystallise pension
-  into the ISA each year to minimise total tax). See `src/strategy/drawdown.ts` and `optimiser.ts`.
+  each year to minimise total tax). Proactive crystallisation — lifetime fill, or the heuristic's
+  `fillPersonalAllowanceFromPension` (up to the PA) — happens at year end *before* the refill, with the
+  year's savings and dividends counted towards the ceiling; the proceeds go to cash, one refill
+  provisions all the tax, and crystallised cash the buffer doesn't need is sheltered in the ISA (up
+  to the allowance) then the GIA at cost. See `src/strategy/drawdown.ts` and `optimiser.ts`.
 - **Income target**: `income.mode` is `fixed` (`baseAnnual`) or `swr` (`swrRate` × starting
   ISA + pension + GIA). `resolveIncome` (`src/model/incomeTargets.ts`) turns either into a
   `baseAnnual` that is then inflated yearly; the engine, Excel export and UI only ever see the

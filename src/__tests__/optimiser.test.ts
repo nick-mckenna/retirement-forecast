@@ -74,16 +74,27 @@ describe("marginal-cost optimiser (per-year)", () => {
 });
 
 describe("lifetime optimiser (whole-period)", () => {
-  it("never does worse than its own no-crystallisation baseline", () => {
+  it("never does worse than the rules-based plan or the annual optimiser", () => {
     const base = defaultScenario();
-
+    const heuristic = runForecast(base);
     const annual = runForecast({ ...base, strategy: { ...base.strategy, taxMode: "annual" } });
     const lifetime = runForecast({ ...base, strategy: { ...base.strategy, taxMode: "lifetime" } });
-
-    // The lifetime search includes a "no top-up" candidate equal to annual mode, so the
-    // chosen strategy's total tax can never exceed annual mode's.
+    // Both are candidates in the lifetime search, so its choice can never cost more tax.
+    expect(lifetime.totalTax).toBeLessThanOrEqual(heuristic.totalTax + 1);
     expect(lifetime.totalTax).toBeLessThanOrEqual(annual.totalTax + 1);
-    expect(lifetime.search?.length).toBe(6);
+    expect(lifetime.search?.some((c) => c.strategy === "heuristic")).toBe(true);
+    expect(lifetime.search?.some((c) => c.strategy === "annual")).toBe(true);
+  });
+
+  it("refines the fill level around the best coarse candidate", () => {
+    const base = defaultScenario();
+    const lifetime = runForecast({ ...base, strategy: { ...base.strategy, taxMode: "lifetime" } });
+    const fills = (lifetime.search ?? []).filter((c) => c.strategy === "fill").map((c) => c.fraction!);
+    const coarseBest = (lifetime.search ?? [])
+      .filter((c) => c.strategy === "fill" && [0, 0.2, 0.4, 0.6, 0.8, 1].includes(c.fraction!))
+      .reduce((a, b) => (b.totalTax < a.totalTax ? b : a));
+    const near = fills.filter((f) => Math.abs(f - coarseBest.fraction!) > 0.001 && Math.abs(f - coarseBest.fraction!) <= 0.1 + 1e-9);
+    expect(near.length).toBeGreaterThan(0);
   });
 
   it("heuristic and annual modes both produce a full forecast", () => {
