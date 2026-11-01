@@ -102,6 +102,13 @@ function assertPreRetirementData(body: unknown): PreRetirementData {
     if (a.openingGainFraction != null && !Number.isFinite(a.openingGainFraction)) {
       throw bad(`Bad gain fraction for account "${a.id}"`);
     }
+    if (typeof a.reliefAtSource !== "boolean") throw bad(`Bad relief-at-source flag for account "${a.id}"`);
+    if (!Number.isFinite(a.externalMonthlyContribution) || a.externalMonthlyContribution < 0) {
+      throw bad(`Bad outside contribution for account "${a.id}"`);
+    }
+    if (a.maturityYear != null && (!Number.isInteger(a.maturityYear) || a.maturityYear < 1900 || a.maturityYear > 2200)) {
+      throw bad(`Bad maturity year for account "${a.id}"`);
+    }
   }
   for (const o of d.overrides) {
     if (!ids.has(o.accountId) || !isMonthKey(o.monthKey) || !Number.isFinite(o.value)) {
@@ -109,6 +116,9 @@ function assertPreRetirementData(body: unknown): PreRetirementData {
     }
     if (o.day != null && (!Number.isInteger(o.day) || o.day < 1 || o.day > 31)) {
       throw bad("Bad balance override day in pre-retirement data");
+    }
+    if (o.basis != null && (!Number.isFinite(o.basis) || o.basis < 0)) {
+      throw bad("Bad balance override basis in pre-retirement data");
     }
   }
   return d;

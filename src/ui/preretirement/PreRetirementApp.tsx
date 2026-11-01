@@ -3,6 +3,7 @@ import { usePreRetirementStore } from "../../store/preRetirementStore";
 import { useExpenseStore } from "../../store/expenseStore";
 import { useStore } from "../../store/scenarioStore";
 import { latestActualTotal, projectAccounts, ratesForKinds } from "../../preretirement/project";
+import { allowanceWarnings } from "../../preretirement/allowances";
 import { handoffMonthKey } from "../../preretirement/link";
 import { monthKeyOf, monthLabel } from "../../expenses/calc";
 import { money, pct, shortDate } from "../format";
@@ -46,6 +47,8 @@ export function PreRetirementApp() {
     [data, expenseMonths, scenario.rates, endMonth, expenseTemplates],
   );
 
+  const allowance = useMemo(() => allowanceWarnings(result, expenseMonths, scenario), [result, expenseMonths, scenario]);
+  const warnings = [...result.warnings, ...allowance];
   const last = result.months[result.months.length - 1];
   const todayMonth = result.months.find((m) => m.key === todayKey);
   const actual = useMemo(() => latestActualTotal(data), [data]);
@@ -69,7 +72,7 @@ export function PreRetirementApp() {
         <DbChip status={dbStatus} />
       </div>
 
-      {(result.warnings.length > 0 || handoff == null) && (
+      {(warnings.length > 0 || handoff == null) && (
         <div className="warn-banner">
           {handoff == null && (
             <div>
@@ -77,7 +80,7 @@ export function PreRetirementApp() {
               {monthLabel(endMonth)} instead. Set the start date in the Retirement forecast inputs.
             </div>
           )}
-          {result.warnings.map((w, i) => (
+          {warnings.map((w, i) => (
             <div key={i}>⚠ {w}</div>
           ))}
           {result.missingMonthKeys.length > 0 && (

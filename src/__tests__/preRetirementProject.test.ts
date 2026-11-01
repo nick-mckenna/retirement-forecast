@@ -20,6 +20,8 @@ import {
   resolveLinkedBalances,
   resolveScenarioForRun,
 } from "../preretirement/link";
+import { allowanceWarnings, taxYearOfDay } from "../preretirement/allowances";
+import { monthKeysBetween } from "../expenses/calc";
 
 const RATES: KindRates = {
   isa: 0.07,
@@ -37,6 +39,9 @@ function account(partial: Partial<InvestmentAccount> & { id: string }): Investme
     kind: "savings",
     openingBalance: 0,
     openingGainFraction: null,
+    reliefAtSource: false,
+    externalMonthlyContribution: 0,
+    maturityYear: null,
     ...partial,
   };
 }
@@ -96,14 +101,14 @@ describe("projectAccounts — growth", () => {
     expect(last.byAccount["empty"].end).toBe(0);
   });
 
-  it("maps scenario rates onto kinds (inv/inv/inv/sav/sav/coupon)", () => {
+  it("maps scenario rates onto kinds (inv/inv/inv/sav/prize; gilts at nominal)", () => {
     const k = ratesForKinds(defaultScenario().rates);
     expect(k.isa).toBe(0.07);
     expect(k.pension).toBe(0.07);
     expect(k.gia).toBe(0.07);
     expect(k.savings).toBe(0.035);
     expect(k.premiumBonds).toBe(0.035);
-    expect(k.gilts).toBe(0.04);
+    expect(k.gilts).toBe(0); // held at nominal before retirement: coupons aren't modelled here
   });
 
   it("applies growth before the month's flows (contributions earn nothing in their month)", () => {
@@ -186,10 +191,10 @@ describe("projectAccounts — flows from tagged lines", () => {
 describe("projectAccounts — balance overrides", () => {
   it("replaces the month-end balance and compounds the following months from it", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
-    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: null, value: 9000 }];
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: null, value: 9000, basis: null }];
     const r = projectAccounts(d, [], RATES, "2026-09");
     expect(r.months[1].byAccount["isa1"].end).toBe(9000);
-    expect(r.months[1].byAccount["isa1"].recorded).toEqual({ day: null, value: 9000 });
+    expect(r.months[1].byAccount["isa1"].recorded).toEqual({ day: null, value: 9000, basis: null });
     const sep = r.months[2].byAccount["isa1"];
     expect(sep.start).toBe(9000);
     expect(sep.end).toBeCloseTo(9000 * (1 + annualToMonthly(0.07)), 10);
@@ -198,11 +203,11 @@ describe("projectAccounts — balance overrides", () => {
 
   it("re-anchors mid-month and pro-rates the rest of the month's growth by calendar days", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
-    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: 10, value: 9000 }];
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: 10, value: 9000, basis: null }];
     const r = projectAccounts(d, [], RATES, "2026-09");
     const aug = r.months[1].byAccount["isa1"];
     const expectedEnd = 9000 * Math.pow(1 + annualToMonthly(0.07), (31 - 10) / 31);
-    expect(aug.recorded).toEqual({ day: 10, value: 9000 });
+    expect(aug.recorded).toEqual({ day: 10, value: 9000, basis: null });
     expect(aug.growth).toBeCloseTo(expectedEnd - 9000, 10);
     expect(aug.end).toBeCloseTo(expectedEnd, 10);
     expect(r.months[2].byAccount["isa1"].start).toBeCloseTo(expectedEnd, 10);
@@ -210,7 +215,7 @@ describe("projectAccounts — balance overrides", () => {
 
   it("still adds contributions due after the recorded day; earlier and undated ones are inside the balance", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 1000 })]);
-    d.overrides = [{ accountId: "isa1", monthKey: "2026-07", day: 10, value: 2000 }];
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-07", day: 10, value: 2000, basis: null }];
     const m = month("2026-07", {
       expense: [
         ["isa1", 500, 0, 5], // due before the record — absorbed
@@ -226,7 +231,7 @@ describe("projectAccounts — balance overrides", () => {
 
   it("assumes tagged income (no due day) is already inside a mid-month recorded balance", () => {
     const d = data([account({ id: "pb1", kind: "premiumBonds", openingBalance: 10000 })]);
-    d.overrides = [{ accountId: "pb1", monthKey: "2026-07", day: 10, value: 5000 }];
+    d.overrides = [{ accountId: "pb1", monthKey: "2026-07", day: 10, value: 5000, basis: null }];
     const r = projectAccounts(d, [month("2026-07", { income: [["pb1", 3000]] })], RATES, "2026-07");
     const cell = r.months[0].byAccount["pb1"];
     expect(cell.withdrawals).toBe(0);
@@ -239,8 +244,8 @@ describe("projectAccounts — balance overrides", () => {
       account({ id: "aNull", kind: "isa", openingBalance: 1000 }),
     ]);
     d.overrides = [
-      { accountId: "a31", monthKey: "2026-09", day: 31, value: 900 }, // September has 30 days
-      { accountId: "aNull", monthKey: "2026-09", day: null, value: 900 },
+      { accountId: "a31", monthKey: "2026-09", day: 31, value: 900, basis: null }, // September has 30 days
+      { accountId: "aNull", monthKey: "2026-09", day: null, value: 900, basis: null },
     ];
     const r = projectAccounts(d, [], RATES, "2026-09");
     const sep = r.months[2];
@@ -252,15 +257,15 @@ describe("projectAccounts — balance overrides", () => {
   it("anchors on the latest record when a month has several (null day = end of month wins)", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
     d.overrides = [
-      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 9500 },
-      { accountId: "isa1", monthKey: "2026-08", day: 10, value: 9000 },
+      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 9500, basis: null },
+      { accountId: "isa1", monthKey: "2026-08", day: 10, value: 9000, basis: null },
     ];
     const r = projectAccounts(d, [], RATES, "2026-08");
     const aug = r.months[1].byAccount["isa1"];
-    expect(aug.recorded).toEqual({ day: 20, value: 9500 });
+    expect(aug.recorded).toEqual({ day: 20, value: 9500, basis: null });
     expect(aug.end).toBeCloseTo(9500 * Math.pow(1 + annualToMonthly(0.07), (31 - 20) / 31), 10);
 
-    d.overrides.push({ accountId: "isa1", monthKey: "2026-08", day: null, value: 9800 });
+    d.overrides.push({ accountId: "isa1", monthKey: "2026-08", day: null, value: 9800, basis: null });
     const r2 = projectAccounts(d, [], RATES, "2026-08");
     expect(r2.months[1].byAccount["isa1"].end).toBe(9800);
   });
@@ -268,8 +273,8 @@ describe("projectAccounts — balance overrides", () => {
   it("ignores overrides before the opening month or for unknown accounts, with warnings", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 1000 })]);
     d.overrides = [
-      { accountId: "isa1", monthKey: "2026-01", day: null, value: 5 },
-      { accountId: "ghost", monthKey: "2026-07", day: null, value: 5 },
+      { accountId: "isa1", monthKey: "2026-01", day: null, value: 5, basis: null },
+      { accountId: "ghost", monthKey: "2026-07", day: null, value: 5, basis: null },
     ];
     const r = projectAccounts(d, [], RATES, "2026-07");
     expect(r.months[0].byAccount["isa1"].end).not.toBe(5);
@@ -306,13 +311,13 @@ describe("latestOverride", () => {
   it("picks the latest-dated record with the engine's ordering (null day = end of month, later entries win ties)", () => {
     const d = data([account({ id: "isa1" })]);
     d.overrides = [
-      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 2 },
-      { accountId: "other", monthKey: "2026-12", day: 1, value: 99 },
-      { accountId: "isa1", monthKey: "2026-08", day: null, value: 3 },
-      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 1 },
+      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 2, basis: null },
+      { accountId: "other", monthKey: "2026-12", day: 1, value: 99, basis: null },
+      { accountId: "isa1", monthKey: "2026-08", day: null, value: 3, basis: null },
+      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 1, basis: null },
     ];
     expect(latestOverride(d, "isa1")?.value).toBe(3); // end of August beats 20 August
-    d.overrides.push({ accountId: "isa1", monthKey: "2026-08", day: null, value: 4 });
+    d.overrides.push({ accountId: "isa1", monthKey: "2026-08", day: null, value: 4, basis: null });
     expect(latestOverride(d, "isa1")?.value).toBe(4); // later entry wins the tie
     expect(latestOverride(d, "ghost")).toBeNull();
   });
@@ -325,9 +330,9 @@ describe("latestActualTotal", () => {
       account({ id: "sav1", openingBalance: 5000 }),
     ]);
     d.overrides = [
-      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 11000 },
-      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 12000 },
-      { accountId: "sav1", monthKey: "2026-08", day: null, value: 4500 },
+      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 11000, basis: null },
+      { accountId: "isa1", monthKey: "2026-08", day: 20, value: 12000, basis: null },
+      { accountId: "sav1", monthKey: "2026-08", day: null, value: 4500, basis: null },
     ];
     expect(latestActualTotal(d)).toEqual({
       total: 16500, // 12000 + 4500 — the latest record each, nothing projected
@@ -342,7 +347,7 @@ describe("latestActualTotal", () => {
       account({ id: "isa1", kind: "isa", openingBalance: 10000 }),
       account({ id: "sav1", openingBalance: 5000 }),
     ]);
-    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: 20, value: 12000 }];
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-08", day: 20, value: 12000, basis: null }];
     expect(latestActualTotal(d)).toEqual({
       total: 17000, // 12000 recorded + 5000 opening
       latestDate: "2026-08-20",
@@ -409,8 +414,8 @@ describe("balancesAtDate", () => {
   it("re-anchors at the latest record on or before the date and ignores later ones", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
     d.overrides = [
-      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 9000 },
-      { accountId: "isa1", monthKey: "2026-07", day: 20, value: 9500 },
+      { accountId: "isa1", monthKey: "2026-07", day: 8, value: 9000, basis: null },
+      { accountId: "isa1", monthKey: "2026-07", day: 20, value: 9500, basis: null },
     ];
     const r = projectAccounts(d, [], RATES, "2026-07");
     // Before the first record: projected from the month start.
@@ -433,7 +438,7 @@ describe("balancesAtDate", () => {
 
   it("treats an end-of-month record as landing on the month's last day", () => {
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })]);
-    d.overrides = [{ accountId: "isa1", monthKey: "2026-07", day: null, value: 9000 }];
+    d.overrides = [{ accountId: "isa1", monthKey: "2026-07", day: null, value: 9000, basis: null }];
     const r = projectAccounts(d, [], RATES, "2026-07");
     expect(balancesAtDate(r, d, [], RATES, "2026-07-30")["isa1"]).toBeCloseTo(
       10000 * Math.pow(1 + monthlyRate, 30 / 31), // not anchored yet
@@ -534,7 +539,7 @@ describe("pre-retirement data migration", () => {
     const d = migratePreRetirementData(sparse);
     expect(d.accounts[0].openingBalance).toBe(0);
     expect(d.accounts[0].openingGainFraction).toBeNull();
-    expect(d.overrides).toEqual([{ accountId: "a", monthKey: "2026-08", day: null, value: 42 }]);
+    expect(d.overrides).toEqual([{ accountId: "a", monthKey: "2026-08", day: null, value: 42, basis: null }]);
     expect(migratePreRetirementData({ ...sparse, overrides: undefined } as unknown as PreRetirementData).overrides).toEqual([]);
   });
 
@@ -553,7 +558,7 @@ describe("pre-retirement data migration", () => {
     expect(ids).toEqual(["nick:gia", "nick:isa", "tracy:premiumBonds", "tracy:savings"]);
     expect(d.accounts.find((a) => a.id === "nick:gia")!.openingGainFraction).toBe(0.25);
     expect(d.accounts.find((a) => a.id === "tracy:savings")!.name).toBe("Tracy Savings");
-    expect(d.overrides).toEqual([{ accountId: "tracy:premiumBonds", monthKey: "2026-08", day: null, value: 42 }]);
+    expect(d.overrides).toEqual([{ accountId: "tracy:premiumBonds", monthKey: "2026-08", day: null, value: 42, basis: null }]);
   });
 
   it("upgrades an untouched legacy save (all-zero pots) to the default registry", () => {
@@ -588,7 +593,7 @@ describe("guard rails", () => {
   it("does not double-count a due day past the month's end against an end-of-month record", () => {
     // February has 28 days: a line due on the 30th lands on the 28th, inside the month-end record.
     const d = data([account({ id: "isa1", kind: "isa", openingBalance: 10000 })], "2027-02");
-    d.overrides = [{ accountId: "isa1", monthKey: "2027-02", day: null, value: 10500 }];
+    d.overrides = [{ accountId: "isa1", monthKey: "2027-02", day: null, value: 10500, basis: null }];
     const months = [month("2027-02", { expense: [["isa1", 500, 0, 30]] })];
     const r = projectAccounts(d, months, RATES, "2027-02");
     expect(r.months[0].byAccount["isa1"].end).toBe(10500);
@@ -740,5 +745,161 @@ describe("projectAccounts — months with no expense record", () => {
     const r = projectAccounts(d, [], rates, "2026-08", templates);
     expect(sampleAtDate(r, d, [], rates, "2026-08-09").balances["isa1"]).toBe(300); // July's only
     expect(sampleAtDate(r, d, [], rates, "2026-08-10").balances["isa1"]).toBe(600);
+  });
+});
+
+describe("account settings", () => {
+  const flat = { ...RATES, isa: 0, pension: 0, gia: 0, gilts: 0 };
+
+  it("grosses up pension contributions into a relief-at-source account by 25%", () => {
+    const d = data([
+      account({ id: "ras", kind: "pension", reliefAtSource: true }),
+      account({ id: "netpay", kind: "pension" }),
+    ]);
+    const r = projectAccounts(d, [month("2026-07", { expense: [["ras", 800], ["netpay", 800]] })], flat, "2026-07");
+    expect(r.months[0].byAccount["ras"].contributions).toBe(1000);
+    expect(r.months[0].byAccount["netpay"].contributions).toBe(800);
+  });
+
+  it("adds outside contributions on the last day of every month", () => {
+    const d = data([account({ id: "p", kind: "pension", externalMonthlyContribution: 500 })]);
+    const r = projectAccounts(d, [], flat, "2026-09");
+    expect(r.months.map((m) => m.byAccount["p"].contributions)).toEqual([500, 500, 500]);
+    // Not there yet mid-month; there at the end of the last day.
+    expect(sampleAtDate(r, d, [], flat, "2026-08-30").balances["p"]).toBe(500);
+    expect(sampleAtDate(r, d, [], flat, "2026-08-31").balances["p"]).toBe(1000);
+    // A mid-month record contains none of it; the month-end payment still lands after it.
+    d.overrides = [{ accountId: "p", monthKey: "2026-08", day: 15, value: 2000, basis: null }];
+    expect(projectAccounts(d, [], flat, "2026-08").months[1].byAccount["p"].end).toBe(2500);
+  });
+
+  it("adds outside GIA contributions to the cost basis", () => {
+    const d = data([
+      account({ id: "g", kind: "gia", openingBalance: 1000, openingGainFraction: 0.5, externalMonthlyContribution: 100 }),
+    ]);
+    const r = projectAccounts(d, [], flat, "2026-08");
+    expect(r.months[1].basis["g"]).toBe(500 + 200);
+  });
+
+  it("re-anchors the GIA basis at a recorded basis, keeping later contributions", () => {
+    const d = data([account({ id: "g", kind: "gia", openingBalance: 1000, openingGainFraction: 0 })]);
+    d.overrides = [{ accountId: "g", monthKey: "2026-08", day: 10, value: 1500, basis: 1800 }];
+    const months = [month("2026-08", { expense: [["g", 200, 0, 20]] }), month("2026-09", { expense: [["g", 50, 0, 5]] })];
+    const r = projectAccounts(d, months, flat, "2026-09");
+    expect(r.months[1].basis["g"]).toBe(1800 + 200); // the contribution due after the record
+    expect(r.months[2].basis["g"]).toBe(2050);
+    expect(sampleAtDate(r, d, months, flat, "2026-08-12").basis["g"]).toBe(1800);
+    expect(sampleAtDate(r, d, months, flat, "2026-08-31").basis["g"]).toBe(2000);
+  });
+
+  it("takes basis out of a recorded month's withdrawal in proportion to the recorded value", () => {
+    const d = data([account({ id: "g", kind: "gia", openingBalance: 1000, openingGainFraction: 0 })]);
+    // Recorded at 2,000 after selling 1,000 at the start of the month: a third of the holding sold.
+    d.overrides = [{ accountId: "g", monthKey: "2026-07", day: null, value: 2000, basis: null }];
+    const r = projectAccounts(d, [month("2026-07", { income: [["g", 1000]] })], flat, "2026-07");
+    expect(r.months[0].basis["g"]).toBeCloseTo(1000 - 1000 * (1000 / 3000), 9);
+  });
+
+  it("hands over a negative gain fraction when the basis exceeds the value (an unrealised loss)", () => {
+    const s = defaultScenario();
+    s.linkPreRetirement = true;
+    s.startDate = "2026-08-31";
+    const d = data([account({ id: "g", kind: "gia", openingBalance: 10_000, openingGainFraction: 0 })], "2026-07");
+    d.overrides = [{ accountId: "g", monthKey: "2026-08", day: null, value: 8_000, basis: null }];
+    const { balances } = resolveLinkedBalances(s, d, []);
+    expect(balances.nick.gia).toBe(8_000);
+    expect(balances.nick.giaGainFraction).toBeCloseTo(-0.25, 9);
+  });
+
+  it("warns when a gilt holding matures by the end of the projection", () => {
+    const d = data([
+      account({ id: "early", kind: "gilts", maturityYear: 2027, name: "Short gilt" }),
+      account({ id: "late", kind: "gilts", maturityYear: 2035, name: "Long gilt" }),
+    ]);
+    const w = projectAccounts(d, [], flat, "2028-03").warnings;
+    expect(w.filter((x) => x.includes("matures"))).toHaveLength(1);
+    expect(w.some((x) => x.startsWith("Short gilt matures in 2027"))).toBe(true);
+  });
+});
+
+describe("allowance checks", () => {
+  const flat = { ...RATES, isa: 0, pension: 0, premiumBonds: 0 };
+  const scenario = () => {
+    const s = defaultScenario();
+    s.people.nick.name = "Alex";
+    return s;
+  };
+
+  it("place a contribution in the UK tax year of its due day", () => {
+    expect(taxYearOfDay("2027-04", 5)).toBe(2026);
+    expect(taxYearOfDay("2027-04", 6)).toBe(2027);
+    expect(taxYearOfDay("2027-04", null)).toBe(2026); // undated = the 1st
+    expect(taxYearOfDay("2027-03", 31)).toBe(2026);
+  });
+
+  it("flag ISA contributions above the year's allowance, per person and tax year", () => {
+    const d = data([account({ id: "i1", kind: "isa" }), account({ id: "i2", kind: "isa" })], "2027-04");
+    // 2 × 1,000 a month due on the 6th from April = 24,000 in 2027/28.
+    const months = monthKeysBetween("2027-04", "2028-03").map((k) =>
+      month(k, { expense: [["i1", 1000, 0, 6], ["i2", 1000, 0, 6]] }),
+    );
+    const r = projectAccounts(d, months, flat, "2028-03");
+    const w = allowanceWarnings(r, months, scenario());
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain("Alex: £24,000 goes into ISAs in tax year 2027/28");
+  });
+
+  it("count relief and outside contributions against the pension annual allowance", () => {
+    const d = data(
+      [account({ id: "p", kind: "pension", reliefAtSource: true, externalMonthlyContribution: 2000 })],
+      "2027-04",
+    );
+    const months = monthKeysBetween("2027-04", "2028-03").map((k) => month(k, { expense: [["p", 2400, 0, 10]] }));
+    // 12 × (2,400 × 1.25 + 2,000) = 60,000: exactly at the allowance — no warning.
+    expect(allowanceWarnings(projectAccounts(d, months, flat, "2028-03"), months, scenario())).toEqual([]);
+    months[5].expenses[0].amount = 2480;
+    const w = allowanceWarnings(projectAccounts(d, months, flat, "2028-03"), months, scenario());
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain("£60,100 gross goes into pensions in tax year 2027/28");
+  });
+
+  it("flag a Premium Bond holding above the £50,000 limit", () => {
+    const d = data([account({ id: "pb", kind: "premiumBonds", openingBalance: 49_000 })], "2026-07");
+    const months = [month("2026-08", { expense: [["pb", 2000]] })];
+    const w = allowanceWarnings(projectAccounts(d, months, flat, "2026-09"), months, scenario());
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain("Alex's Premium Bonds reach £51,000");
+    expect(w[0]).toContain("August 2026");
+  });
+});
+
+describe("Premium Bonds at the holding limit", () => {
+  it("stop growing at £50,000 (prizes above it are paid out) and raise no warning", () => {
+    const d = data([account({ id: "pb", kind: "premiumBonds", openingBalance: 49_000 })], "2026-07");
+    const r = projectAccounts(d, [], RATES, "2027-06");
+    expect(r.months[0].byAccount["pb"].end).toBeCloseTo(49_000 + 49_000 * annualToMonthly(0.045), 9);
+    expect(r.months[11].byAccount["pb"].end).toBe(50_000);
+    expect(sampleAtDate(r, d, [], RATES, "2027-03-15").balances["pb"]).toBe(50_000);
+    expect(allowanceWarnings(r, [], defaultScenario())).toEqual([]);
+  });
+
+  it("don't grow past the limit after a recorded balance at it", () => {
+    const d = data([account({ id: "pb", kind: "premiumBonds", openingBalance: 40_000 })], "2026-07");
+    d.overrides = [{ accountId: "pb", monthKey: "2026-08", day: 10, value: 50_000, basis: null }];
+    const r = projectAccounts(d, [], RATES, "2026-09");
+    expect(r.months[1].byAccount["pb"].end).toBe(50_000);
+    expect(r.months[2].byAccount["pb"].end).toBe(50_000);
+  });
+});
+
+describe("Premium Bonds topped up to the limit", () => {
+  it("earn no prize growth on top once a deposit fills the holding", () => {
+    const d = data([account({ id: "pb", kind: "premiumBonds", openingBalance: 44_000 })], "2026-07");
+    const months = [month("2026-07", { expense: [["pb", 6_000, 0, 15]] })];
+    const r = projectAccounts(d, months, RATES, "2026-08");
+    expect(r.months[0].byAccount["pb"].end).toBe(50_000);
+    expect(r.months[1].byAccount["pb"].end).toBe(50_000);
+    expect(sampleAtDate(r, d, months, RATES, "2026-07-31").balances["pb"]).toBe(50_000);
+    expect(allowanceWarnings(r, months, defaultScenario())).toEqual([]);
   });
 });

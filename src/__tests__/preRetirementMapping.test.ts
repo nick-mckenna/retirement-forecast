@@ -20,6 +20,9 @@ function fullPreRetirementData(): PreRetirementData {
         kind: "isa",
         openingBalance: 120000.45,
         openingGainFraction: null,
+        reliefAtSource: false,
+        externalMonthlyContribution: 0,
+        maturityYear: null,
       },
       {
         id: "nick-gia",
@@ -28,6 +31,9 @@ function fullPreRetirementData(): PreRetirementData {
         kind: "gia",
         openingBalance: 90000,
         openingGainFraction: 0.3,
+        reliefAtSource: false,
+        externalMonthlyContribution: 250.5,
+        maturityYear: null,
       },
       {
         id: "tracy-pension",
@@ -36,6 +42,9 @@ function fullPreRetirementData(): PreRetirementData {
         kind: "pension",
         openingBalance: 50000.5,
         openingGainFraction: null,
+        reliefAtSource: true,
+        externalMonthlyContribution: 812.34,
+        maturityYear: null,
       },
       {
         id: "tracy-premium-bonds",
@@ -44,14 +53,18 @@ function fullPreRetirementData(): PreRetirementData {
         kind: "premiumBonds",
         openingBalance: 42000,
         openingGainFraction: null,
+        reliefAtSource: false,
+        externalMonthlyContribution: 0,
+        maturityYear: 2031,
       },
     ],
     overrides: [
-      { accountId: "nick-isa", monthKey: "2026-09", day: null, value: 120600.12 },
-      { accountId: "nick-isa", monthKey: "2026-08", day: 15, value: 120300 },
+      { accountId: "nick-isa", monthKey: "2026-09", day: null, value: 120600.12, basis: null },
+      { accountId: "nick-isa", monthKey: "2026-08", day: 15, value: 120300, basis: null },
+      { accountId: "nick-gia", monthKey: "2026-10", day: 3, value: 91000, basis: 64000.25 },
       // Same month recorded twice (mid-month, then month end) — both kept.
-      { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: null, value: 42150 },
-      { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: 10, value: 42090 },
+      { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: null, value: 42150, basis: null },
+      { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: 10, value: 42090, basis: null },
     ],
   };
 }
@@ -73,8 +86,15 @@ function simulateDbReadback(rows: PreRetirementRows): PreRetirementRows {
   const s = (v: number | string | null) => (v == null ? null : (String(v) as unknown as number));
   return {
     state: { ...rows.state },
-    accounts: rows.accounts.map((r) => ({ ...r, openingBalance: s(r.openingBalance)!, gainFraction: s(r.gainFraction) })),
-    overrides: rows.overrides.map((r) => ({ ...r, value: s(r.value)! })),
+    accounts: rows.accounts.map((r) => ({
+      ...r,
+      openingBalance: s(r.openingBalance)!,
+      gainFraction: s(r.gainFraction),
+      externalMonthlyContribution: s(r.externalMonthlyContribution)!,
+      maturityYear: s(r.maturityYear),
+      reliefAtSource: r.reliefAtSource ? 1 : 0, // BIT comes back as 0/1 or a boolean
+    })),
+    overrides: rows.overrides.map((r) => ({ ...r, value: s(r.value)!, basis: s(r.basis) })),
   };
 }
 
@@ -120,5 +140,23 @@ describe("pre-retirement SQL row mapping", () => {
     expect(back.accounts[0].openingGainFraction).toBeNull();
     expect(back.accounts[1].openingGainFraction).toBe(0.3);
     expect(back.overrides.find((o) => o.monthKey === "2026-09")!.value).toBe(120600.12);
+    expect(back.overrides.find((o) => o.accountId === "nick-gia")!.basis).toBe(64000.25);
+    expect(back.accounts[2].reliefAtSource).toBe(true);
+    expect(back.accounts[2].externalMonthlyContribution).toBe(812.34);
+    expect(back.accounts[3].maturityYear).toBe(2031);
+  });
+
+  it("reads rows saved before the account settings existed with their defaults", () => {
+    const rows = preRetirementToRows(fullPreRetirementData());
+    for (const a of rows.accounts) {
+      const r = a as unknown as Record<string, unknown>;
+      delete r.reliefAtSource;
+      delete r.externalMonthlyContribution;
+      delete r.maturityYear;
+    }
+    for (const o of rows.overrides) delete (o as unknown as Record<string, unknown>).basis;
+    const back = rowsToPreRetirement(rows);
+    expect(back.accounts.every((a) => !a.reliefAtSource && a.externalMonthlyContribution === 0 && a.maturityYear === null)).toBe(true);
+    expect(back.overrides.every((o) => o.basis === null)).toBe(true);
   });
 });

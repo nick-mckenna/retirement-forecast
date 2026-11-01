@@ -15,6 +15,11 @@ import type {
 } from "../src/model/preRetirementTypes";
 
 type SqlNum = number | string;
+type SqlBool = boolean | number | string;
+
+function bool(v: SqlBool): boolean {
+  return v === true || v === 1 || v === "1" || v === "true";
+}
 
 export interface PreRetirementStateRow {
   id: number;
@@ -30,6 +35,9 @@ export interface PreRetirementAccountRow {
   openingBalance: SqlNum;
   /** Embedded gain fraction; only meaningful for kind 'gia', null elsewhere. */
   gainFraction: SqlNum | null;
+  reliefAtSource: SqlBool;
+  externalMonthlyContribution: SqlNum;
+  maturityYear: SqlNum | null;
   sortOrder: number;
 }
 
@@ -40,6 +48,7 @@ export interface PreRetirementOverrideRow {
    *  "day" is an ODBC reserved word, hence dayOfMonth (like the expense tables). */
   dayOfMonth: number | null;
   value: SqlNum;
+  basis: SqlNum | null;
 }
 
 export interface PreRetirementRows {
@@ -67,6 +76,9 @@ export function preRetirementToRows(d: PreRetirementData): PreRetirementRows {
         kind: a.kind,
         openingBalance: a.openingBalance,
         gainFraction: a.openingGainFraction,
+        reliefAtSource: a.reliefAtSource,
+        externalMonthlyContribution: a.externalMonthlyContribution,
+        maturityYear: a.maturityYear,
         sortOrder: i,
       }),
     ),
@@ -76,6 +88,7 @@ export function preRetirementToRows(d: PreRetirementData): PreRetirementRows {
         monthKey: o.monthKey,
         dayOfMonth: o.day,
         value: o.value,
+        basis: o.basis,
       }),
     ),
   };
@@ -92,6 +105,9 @@ export function rowsToPreRetirement(r: PreRetirementRows): PreRetirementData {
         kind: row.kind as PreAccountKind,
         openingBalance: num(row.openingBalance),
         openingGainFraction: numOrNull(row.gainFraction),
+        reliefAtSource: row.reliefAtSource == null ? false : bool(row.reliefAtSource),
+        externalMonthlyContribution: row.externalMonthlyContribution == null ? 0 : num(row.externalMonthlyContribution),
+        maturityYear: numOrNull(row.maturityYear),
       }),
     );
   const overrides = [...r.overrides]
@@ -108,6 +124,7 @@ export function rowsToPreRetirement(r: PreRetirementRows): PreRetirementData {
         monthKey: row.monthKey,
         day: numOrNull(row.dayOfMonth),
         value: num(row.value),
+        basis: numOrNull(row.basis),
       }),
     );
   return { openingMonth: r.state.openingMonth, accounts, overrides };

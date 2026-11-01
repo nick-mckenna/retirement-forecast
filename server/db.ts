@@ -237,6 +237,10 @@ const SCHEMA: string[] = [
      kind NVARCHAR(20) NOT NULL,
      openingBalance FLOAT NOT NULL,
      gainFraction FLOAT NULL,
+     reliefAtSource BIT NOT NULL CONSTRAINT DF_PreRetirementAccount_reliefAtSource DEFAULT 0,
+     externalMonthlyContribution FLOAT NOT NULL
+       CONSTRAINT DF_PreRetirementAccount_externalMonthlyContribution DEFAULT 0,
+     maturityYear INT NULL,
      sortOrder INT NOT NULL CONSTRAINT DF_PreRetirementAccount_sortOrder DEFAULT 0,
      CONSTRAINT CK_PreRetirementAccount_kind
        CHECK (kind IN (N'isa', N'pension', N'gia', N'savings', N'premiumBonds', N'gilts'))
@@ -253,7 +257,8 @@ const SCHEMA: string[] = [
        REFERENCES dbo.PreRetirementAccount(accountId) ON DELETE CASCADE,
      monthKey NVARCHAR(7) NOT NULL,
      dayOfMonth INT NULL,
-     value FLOAT NOT NULL
+     value FLOAT NOT NULL,
+     basis FLOAT NULL
    )`,
   // The short-lived fixed-pots schema this registry replaced (shipped empty,
   // superseded the same week — safe to drop).
@@ -261,6 +266,16 @@ const SCHEMA: string[] = [
   `IF OBJECT_ID(N'dbo.PreRetirementPot', N'U') IS NOT NULL DROP TABLE dbo.PreRetirementPot`,
   // Columns added after the tables first shipped (fresh installs get them in
   // the CREATE TABLE statements above; existing databases via these guards).
+  `IF COL_LENGTH(N'dbo.PreRetirementAccount', N'reliefAtSource') IS NULL
+   ALTER TABLE dbo.PreRetirementAccount ADD reliefAtSource BIT NOT NULL
+     CONSTRAINT DF_PreRetirementAccount_reliefAtSource DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.PreRetirementAccount', N'externalMonthlyContribution') IS NULL
+   ALTER TABLE dbo.PreRetirementAccount ADD externalMonthlyContribution FLOAT NOT NULL
+     CONSTRAINT DF_PreRetirementAccount_externalMonthlyContribution DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.PreRetirementAccount', N'maturityYear') IS NULL
+   ALTER TABLE dbo.PreRetirementAccount ADD maturityYear INT NULL`,
+  `IF COL_LENGTH(N'dbo.PreRetirementAccountOverride', N'basis') IS NULL
+   ALTER TABLE dbo.PreRetirementAccountOverride ADD basis FLOAT NULL`,
   `IF COL_LENGTH(N'dbo.Scenario', N'linkPreRetirement') IS NULL
    ALTER TABLE dbo.Scenario ADD linkPreRetirement BIT NOT NULL
      CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0`,

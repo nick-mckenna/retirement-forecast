@@ -24,11 +24,10 @@ import {
 import { planGiltPurchases } from "../strategy/giltLadder";
 import { emptyPersonColumns, type LedgerRow, type PersonColumns } from "./ledger";
 import { giaGainFraction, giltValue, initState, sellGia, sellGilts, type SimState } from "./state";
+import { PREMIUM_BOND_LIMIT } from "../tax/allowanceLimits";
 
 const PERSONS: PersonId[] = ["nick", "tracy"];
 
-/** NS&I's maximum Premium Bond holding per person. */
-const PREMIUM_BOND_LIMIT = 50_000;
 
 export interface PersonTax {
   incomeTax: number;

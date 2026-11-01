@@ -227,6 +227,9 @@ function accountsFromLegacyPots(d: LegacyPreRetirementData): {
         kind,
         openingBalance: 0,
         openingGainFraction: kind === "gia" ? (d.giaGainFraction?.[person] ?? 0) : null,
+        reliefAtSource: false,
+        externalMonthlyContribution: 0,
+        maturityYear: null,
       };
       accounts.set(id, acc);
     }
@@ -240,7 +243,7 @@ function accountsFromLegacyPots(d: LegacyPreRetirementData): {
   }
   const overrides = (d.overrides ?? []).map((o) => {
     ensure(o.person, o.kind);
-    return { accountId: `${o.person}:${o.kind}`, monthKey: o.monthKey, day: null, value: o.value };
+    return { accountId: `${o.person}:${o.kind}`, monthKey: o.monthKey, day: null, value: o.value, basis: null };
   });
   return { accounts: [...accounts.values()], overrides };
 }
@@ -269,7 +272,10 @@ export function migratePreRetirementData(d: PreRetirementData): PreRetirementDat
       ...a,
       openingBalance: a.openingBalance ?? 0,
       openingGainFraction: a.openingGainFraction ?? null,
+      reliefAtSource: a.reliefAtSource ?? false,
+      externalMonthlyContribution: a.externalMonthlyContribution ?? 0,
+      maturityYear: a.maturityYear ?? null,
     })),
-    overrides: (d.overrides ?? []).map((o) => ({ ...o, day: o.day ?? null })),
+    overrides: (d.overrides ?? []).map((o) => ({ ...o, day: o.day ?? null, basis: o.basis ?? null })),
   };
 }

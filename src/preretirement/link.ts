@@ -16,6 +16,7 @@ import type { PreRetirementData } from "../model/preRetirementTypes";
 import { PERSON_IDS } from "../model/preRetirementTypes";
 import { monthLabel } from "../expenses/calc";
 import { isIsoDate } from "../tax/taxYear";
+import { allowanceWarnings } from "./allowances";
 import {
   projectAccounts,
   ratesForKinds,
@@ -94,7 +95,9 @@ export function handoffBalances(
       }
     }
     const gia = out[p].gia;
-    out[p].giaGainFraction = gia > 0 ? Math.min(1, Math.max(0, (gia - giaBasis[p]) / gia)) : 0;
+    // Negative when the basis exceeds the value (an unrealised loss): the engine tracks the
+    // basis live, so selling then realises the loss against that year's gains.
+    out[p].giaGainFraction = gia > 0 ? Math.min(1, (gia - giaBasis[p]) / gia) : 0;
   }
   return { balances: out, warnings };
 }
@@ -155,7 +158,9 @@ export function resolveLinkedBalances(
   }
   return {
     balances: handoff.balances,
-    warnings: [...result.warnings, ...handoff.warnings].map((w) => `Pre-retirement link: ${w}`),
+    warnings: [...result.warnings, ...allowanceWarnings(result, expenseMonths, scenario), ...handoff.warnings].map(
+      (w) => `Pre-retirement link: ${w}`,
+    ),
   };
 }
 

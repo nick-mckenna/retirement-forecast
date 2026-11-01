@@ -48,12 +48,21 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
             (o.monthKey === monthKey && (o.day ?? null) === day)
           ),
       );
-      d.overrides.push({ accountId, monthKey, day, value: from.value });
+      d.overrides.push({ accountId, monthKey, day, value: from.value, basis: from.basis ?? null });
     });
   };
 
   const clearActual = (accountId: string, from: BalanceOverride) =>
     setOverride(accountId, from.monthKey, from.day ?? null, null);
+
+  /** The cost basis recorded with the shown (latest) record — GIA accounts only. */
+  const setBasis = (accountId: string, from: BalanceOverride, basis: number | null) =>
+    update((d) => {
+      const o = d.overrides.find(
+        (x) => x.accountId === accountId && x.monthKey === from.monthKey && (x.day ?? null) === (from.day ?? null),
+      );
+      if (o) o.basis = basis == null ? null : Math.max(0, basis);
+    });
 
   const addAccount = () =>
     update((d) => {
@@ -64,6 +73,9 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
         kind: "savings",
         openingBalance: 0,
         openingGainFraction: null,
+        reliefAtSource: false,
+        externalMonthlyContribution: 0,
+        maturityYear: null,
       });
     });
 
@@ -105,8 +117,10 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
         </p>
         <p className="muted" style={{ fontSize: 13 }}>
           Growth follows the account's type, using the active scenario's rates: ISA / Pension / GIA
-          grow at {pct(scenario.rates.investmentGrowth)}, Savings and Premium Bonds at{" "}
-          {pct(scenario.rates.savingsInterest)}, Gilts at {pct(scenario.rates.giltCoupon)}.
+          grow at {pct(scenario.rates.investmentGrowth)}, Savings at {pct(scenario.rates.savingsInterest)},
+          Premium Bonds at {pct(scenario.rates.premiumBondRate)} (tax-free prizes). Gilts are held at
+          their nominal value until retirement: their coupons aren't modelled here, so record them as
+          untagged income in the expense tracker.
         </p>
       </div>
 
@@ -119,8 +133,18 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
         </div>
         <p className="muted" style={{ fontSize: 13 }}>
           Your real accounts. The <b>Type</b> groups an account for growth and for the retirement
-          handoff (Savings and Premium Bonds both count as retirement savings; the GIA gain % seeds
-          the cost basis for CGT).
+          handoff (each type feeds the same retirement pot — Premium Bonds keep their own tax-free
+          pot; the GIA gain % seeds the cost basis for CGT).
+        </p>
+        <p className="muted" style={{ fontSize: 13 }}>
+          <b>Relief at source</b>: pension contributions you tag from the joint account are topped up
+          by the provider with 25% basic-rate relief (higher-rate relief you reclaim through
+          self-assessment doesn't reach the pot and isn't added). <b>Outside / month</b>: money paid
+          in from outside the joint account — employer contributions, salary sacrifice — already
+          gross, on the last day of each month. <b>Matures</b>: a gilt holding's maturity year; the
+          forecast warns if it matures before retirement. <b>Basis</b>: a GIA's recorded balance can
+          carry the cost basis from the platform's statement, which re-anchors the CGT basis. ISA,
+          pension annual allowance and Premium Bond limits are checked and flagged above.
         </p>
         <p className="muted" style={{ fontSize: 13 }}>
           <b>Latest actual balance</b> records what the account was <b>actually</b> worth
@@ -130,6 +154,7 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
           taken on a different day, or press × to remove the record. This — not the Paid column in
           the expense tracker — is how real growth is fed in.
         </p>
+        <div style={{ overflowX: "auto" }}>
         <table className="fit zebra">
           <thead>
             <tr>
@@ -138,8 +163,12 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
               <th>Type</th>
               <th>Opening balance</th>
               <th>GIA gain %</th>
+              <th title="Pension contributions tagged from the joint account get 25% basic-rate relief added">Relief at source</th>
+              <th title="Paid in from outside the joint account (employer, salary sacrifice), gross, on the last day of each month">Outside / month</th>
+              <th title="Gilts: the calendar year the holding matures">Matures</th>
               <th>Latest actual balance</th>
               <th>As of end of</th>
+              <th title="GIA: the cost basis on the same day, from the platform's statement (blank = keep tracking it)">Basis</th>
               <th></th>
             </tr>
           </thead>
@@ -172,6 +201,8 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
                         editAccount(a.id, (x) => {
                           x.kind = ev.target.value as PreAccountKind;
                           x.openingGainFraction = x.kind === "gia" ? (x.openingGainFraction ?? 0) : null;
+                          if (x.kind !== "pension") x.reliefAtSource = false;
+                          if (x.kind !== "gilts") x.maturityYear = null;
                         })
                       }
                     >
@@ -209,6 +240,48 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
                     )}
                   </td>
                   <td>
+                    {a.kind === "pension" ? (
+                      <input
+                        type="checkbox"
+                        checked={a.reliefAtSource}
+                        onChange={(ev) => editAccount(a.id, (x) => (x.reliefAtSource = ev.target.checked))}
+                      />
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      step={50}
+                      min={0}
+                      style={{ width: 90 }}
+                      value={a.externalMonthlyContribution}
+                      onChange={(ev) =>
+                        editAccount(a.id, (x) => (x.externalMonthlyContribution = Math.max(0, parseAmount(ev.target.value))))
+                      }
+                    />
+                  </td>
+                  <td>
+                    {a.kind === "gilts" ? (
+                      <input
+                        type="number"
+                        step={1}
+                        style={{ width: 70 }}
+                        placeholder="year"
+                        value={a.maturityYear ?? ""}
+                        onChange={(ev) =>
+                          editAccount(a.id, (x) => {
+                            const y = Math.round(parseAmount(ev.target.value));
+                            x.maturityYear = ev.target.value === "" || y < 1900 || y > 2200 ? null : y;
+                          })
+                        }
+                      />
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td>
                     <input
                       type="number"
                       step={0.01}
@@ -234,6 +307,22 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
                     )}
                   </td>
                   <td>
+                    {a.kind === "gia" && latest ? (
+                      <input
+                        type="number"
+                        step={0.01}
+                        style={{ width: 110 }}
+                        placeholder="tracked"
+                        value={latest.basis ?? ""}
+                        onChange={(ev) =>
+                          setBasis(a.id, latest, ev.target.value === "" ? null : parseAmount(ev.target.value))
+                        }
+                      />
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td>
                     <button className="ghost" onClick={() => deleteAccount(a.id)}>
                       Delete
                     </button>
@@ -243,6 +332,7 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
 
     </>

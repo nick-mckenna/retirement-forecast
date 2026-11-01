@@ -170,7 +170,11 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
 
 - **Accounts are a user-editable registry of real accounts**
   (`src/model/preRetirementTypes.ts`): `InvestmentAccount { id, name, owner, kind,
-  openingBalance, openingGainFraction }`, e.g. "Nick ISA", "Tracy Pension".
+  openingBalance, openingGainFraction, reliefAtSource, externalMonthlyContribution, maturityYear }`,
+  e.g. "Nick ISA", "Tracy Pension". `reliefAtSource` (pensions) grosses tagged contributions up by
+  25% (`RELIEF_AT_SOURCE_GROSS_UP`, `src/tax/allowanceLimits.ts`); `externalMonthlyContribution` is
+  money from outside the joint account (employer, salary sacrifice), gross, due on each month's last
+  day; `maturityYear` (gilts) only drives a matures-before-retirement warning.
   The `kind` (`PreAccountKind`: isa | pension | gia | savings |
   **premiumBonds** | gilts) is the grouping vocabulary shared by all three modules — it picks the
   growth rate and the retirement pot at handoff. `defaultPreRetirementData()` ships a generic
@@ -179,11 +183,12 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   accounts, which live only in the local DB. `emptyPreRetirementData()` is what the server
   reports before anything is saved. Expense/income lines are tagged with an account's `id`.
   `PreRetirementData = { openingMonth, accounts, overrides }`: opening balances are as of the
-  START of `openingMonth`; a `BalanceOverride { accountId, monthKey, day, value }` records the
+  START of `openingMonth`; a `BalanceOverride { accountId, monthKey, day, value, basis }` records the
   **actual** balance at the end of `day` in that month (`day` null = end of the month) and
   re-anchors the projection there — the rest of the month's growth is pro-rated by calendar days
   and contributions due after the recorded day are still added (this — not the expense tracker's
-  Paid column — is how real growth, including losses, is fed in). A month may hold several
+  Paid column — is how real growth, including losses, is fed in; a GIA record's optional `basis`
+  re-anchors the cost basis the same way). A month may hold several
   records (the DB key is a surrogate id); the latest-day one anchors, earlier ones are history. Deleting an account
   keeps its tags on expense lines (shown as "(deleted account)", excluded from the forecast with
   a warning) — deliberately no FK from the expense tables, so history is never broken.
@@ -192,12 +197,19 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   (`annualToMonthly`), then tagged flows (expense line = contribution IN, income line =
   withdrawal OUT, always the expected `amount`, never `paid`), then any override. Growth rates
   come from the active scenario's `Rates` via `ratesForKinds` (isa/pension/gia →
-  `investmentGrowth`, savings/premiumBonds → `savingsInterest`, gilts → `giltCoupon`). It tracks
-  each person's GIA cost basis for the CGT handoff and reports `missingMonthKeys` /
+  `investmentGrowth`, savings → `savingsInterest`, premiumBonds → `premiumBondRate`, with prizes reinvested only up to
+  the £50,000 limit (`cappedGrowth`, judged on the holding after the period’s deposits); gilts are held
+  at nominal, rate 0 — coupons aren't modelled before retirement). It tracks
+  each person's GIA cost basis for the CGT handoff (in a recorded month, withdrawals take basis out
+  against the recorded value; the handoff's `giaGainFraction` goes negative for an unrealised loss) and reports `missingMonthKeys` /
   `unknownAccountIds` as warnings. Given the expense `templates` (the UI always passes them), a month
   with no expense record is projected as a snapshot of the standard items (`assumedMonths`), so its
   tagged contributions still count; without them it is zero flows. `balancesAtDate` samples the end of any day (clamped to the
   range, re-anchored at recorded balances up to that day) for the Snapshot tab.
+  `allowanceWarnings` (`src/preretirement/allowances.ts`) checks the same flows by UK tax year of
+  their due day: ISA contributions per person against the year's `isaAllowance`, gross pension
+  contributions against the £60,000 annual allowance (simplified — no carry-forward, taper or MPAA),
+  and Premium Bond holdings against the £50,000 limit; shown in the module and in the link warnings.
 - **Handoff** `src/preretirement/link.ts`: the projection runs through `startDate`'s month and is
   sampled at the **end of `startDate`** (`sampleAtDate` → balances + GIA basis); the engine owns
   everything from the next day, which is the no-double-counting rule (`handoffMonthKey` returns the

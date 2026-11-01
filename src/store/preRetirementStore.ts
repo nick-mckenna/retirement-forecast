@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PreRetirementData } from "../model/preRetirementTypes";
+import type { BalanceOverride, PreRetirementData } from "../model/preRetirementTypes";
 import { defaultPreRetirementData } from "../model/preRetirementTypes";
 import { migratePreRetirementData } from "../model/migrate";
 import { api } from "../api/client";
@@ -57,10 +57,11 @@ export const usePreRetirementStore = create<PreRetirementStore>((set) => ({
   setOverride: (accountId, monthKey, day, value) =>
     set((st) => {
       const data = clone(st.data);
-      data.overrides = data.overrides.filter(
-        (o) => !(o.accountId === accountId && o.monthKey === monthKey && (o.day ?? null) === day),
-      );
-      if (value != null) data.overrides.push({ accountId, monthKey, day, value });
+      const same = (o: BalanceOverride) => o.accountId === accountId && o.monthKey === monthKey && (o.day ?? null) === day;
+      // Re-typing the value keeps a basis already recorded with it.
+      const basis = data.overrides.find(same)?.basis ?? null;
+      data.overrides = data.overrides.filter((o) => !same(o));
+      if (value != null) data.overrides.push({ accountId, monthKey, day, value, basis });
       saveLocal(data);
       queueSave();
       return { data };

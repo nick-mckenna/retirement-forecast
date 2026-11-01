@@ -11,7 +11,17 @@ const scenario = {
 } as unknown as Scenario;
 
 function acct(id: string, owner: PersonId, kind: PreAccountKind, name = id): InvestmentAccount {
-  return { id, name, owner, kind, openingBalance: 0, openingGainFraction: null };
+  return {
+    id,
+    name,
+    owner,
+    kind,
+    openingBalance: 0,
+    openingGainFraction: null,
+    reliefAtSource: false,
+    externalMonthlyContribution: 0,
+    maturityYear: null,
+  };
 }
 
 // Alice: two ISAs (aggregate to one category), a pension and a GIA. Bob: savings + gilts.

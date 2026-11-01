@@ -27,6 +27,16 @@ import type {
 } from "../model/preRetirementTypes";
 import { annualToMonthly } from "../model/rates";
 import { clampDay, createMonthFromTemplates, daysInMonth, monthKeysBetween, monthLabel } from "../expenses/calc";
+import { PREMIUM_BOND_LIMIT, RELIEF_AT_SOURCE_GROSS_UP } from "../tax/allowanceLimits";
+
+/** One account's growth, given what it holds once the period's money has moved (`held`):
+ *  Premium Bond prizes are only reinvested up to the holding limit (NS&I pays the rest out, to
+ *  wherever the holding pays — outside the registry), so a holding at the limit stops growing.
+ *  Money paid in above the limit is not trimmed — allowanceWarnings flags it. Other kinds grow
+ *  freely. */
+function cappedGrowth(a: InvestmentAccount, held: number, growth: number): number {
+  return a.kind === "premiumBonds" ? Math.min(growth, Math.max(0, PREMIUM_BOND_LIMIT - held)) : growth;
+}
 
 export interface AccountMonthCell {
   /** Balance at the start of the month (= previous month's end). */
@@ -87,7 +97,9 @@ export function ratesForKinds(rates: Rates): KindRates {
     gia: rates.investmentGrowth,
     savings: rates.savingsInterest,
     premiumBonds: rates.premiumBondRate,
-    gilts: rates.giltCoupon,
+    // Held at nominal value before retirement: coupons aren't modelled here (record them as
+    // untagged income), and the price is assumed to sit at par.
+    gilts: 0,
   };
 }
 
@@ -99,13 +111,21 @@ export interface MonthFlows {
   contributionsByDay: { day: number | null; amount: number }[];
 }
 
-/** Net tagged flows per month per account id, from the lines' expected `amount`.
- *  Tags that match no registry account are reported, not applied. */
+/** Net flows per month per account id: tagged lines at their expected `amount` (a pension
+ *  contribution into a relief-at-source account is grossed up by basic-rate relief), plus —
+ *  for each month in `outsideKeys` — every account's outside contribution, due on the
+ *  month's last day. Tags that match no registry account are reported, not applied. */
 export function monthlyFlows(
   months: ExpenseMonth[],
   accounts: InvestmentAccount[],
+  outsideKeys: string[] = [],
 ): { flows: Map<string, Map<string, MonthFlows>>; unknownAccountIds: string[] } {
   const known = new Set(accounts.map((a) => a.id));
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  const grossUp = (id: string) => {
+    const a = byId.get(id);
+    return a?.kind === "pension" && a.reliefAtSource ? RELIEF_AT_SOURCE_GROSS_UP : 1;
+  };
   const flows = new Map<string, Map<string, MonthFlows>>();
   const unknown = new Set<string>();
   const get = (monthKey: string, accountId: string): MonthFlows | null => {
@@ -127,16 +147,25 @@ export function monthlyFlows(
       if (e.accountId == null) continue;
       const f = get(m.key, e.accountId);
       if (f) {
-        f.contributions += e.amount;
+        const amount = e.amount * grossUp(e.accountId);
+        f.contributions += amount;
         // A due day past the month's length (e.g. the 30th in February) falls on its last
         // day — otherwise it would sort after an end-of-month record and be counted twice.
-        f.contributionsByDay.push({ day: e.day == null ? null : clampDay(e.day, m.key), amount: e.amount });
+        f.contributionsByDay.push({ day: e.day == null ? null : clampDay(e.day, m.key), amount });
       }
     }
     for (const inc of m.income) {
       if (inc.accountId == null) continue;
       const f = get(m.key, inc.accountId);
       if (f) f.withdrawals += inc.amount;
+    }
+  }
+  for (const key of outsideKeys) {
+    for (const a of accounts) {
+      if (!(a.externalMonthlyContribution > 0)) continue;
+      const f = get(key, a.id)!;
+      f.contributions += a.externalMonthlyContribution;
+      f.contributionsByDay.push({ day: daysInMonth(key), amount: a.externalMonthlyContribution });
     }
   }
   return { flows, unknownAccountIds: [...unknown].sort() };
@@ -186,7 +215,7 @@ export function projectAccounts(
   const missingMonthKeys = range.filter((k) => !trackedKeys.has(k));
   const assumedMonths = templates ? missingMonthKeys.map((k) => createMonthFromTemplates(templates, k)) : [];
 
-  const { flows, unknownAccountIds } = monthlyFlows([...expenseMonths, ...assumedMonths], accounts);
+  const { flows, unknownAccountIds } = monthlyFlows([...expenseMonths, ...assumedMonths], accounts, range);
   if (unknownAccountIds.length > 0) {
     warnings.push(
       `Expense lines are tagged to unknown/deleted account(s), treated as untagged: ${unknownAccountIds.join(", ")}.`,
@@ -211,7 +240,7 @@ export function projectAccounts(
   // Latest record per account per month anchors the projection (a null day
   // means end of month, so it sorts after every dated record); earlier
   // same-month records are history and irrelevant to the month's end balance.
-  const overrideMap = new Map<string, { day: number | null; value: number }>();
+  const overrideMap = new Map<string, { day: number | null; value: number; basis: number | null }>();
   const effectiveDay = (day: number | null | undefined) => day ?? 32;
   for (const o of data.overrides) {
     const acc = byId.get(o.accountId);
@@ -228,7 +257,7 @@ export function projectAccounts(
     const k = `${o.accountId}:${o.monthKey}`;
     const prev = overrideMap.get(k);
     if (!prev || effectiveDay(o.day) >= effectiveDay(prev.day)) {
-      overrideMap.set(k, { day: o.day ?? null, value: o.value });
+      overrideMap.set(k, { day: o.day ?? null, value: o.value, basis: o.basis ?? null });
     }
   }
 
@@ -262,10 +291,14 @@ export function projectAccounts(
       const start = balances.get(a.id)!;
       const monthlyRate = annualToMonthly(rates[a.kind]);
       // A negative balance is a shortfall, not an investment: it doesn't grow.
-      const monthGrowth = Math.max(0, start) * monthlyRate;
       const f = monthFlows?.get(a.id);
       const monthContributions = f?.contributions ?? 0;
       const monthWithdrawals = f?.withdrawals ?? 0;
+      const monthGrowth = cappedGrowth(
+        a,
+        start + monthContributions - monthWithdrawals,
+        Math.max(0, start) * monthlyRate,
+      );
       const record = overrideMap.get(`${a.id}:${key}`);
 
       let cell: AccountMonthCell;
@@ -285,10 +318,14 @@ export function projectAccounts(
         // by calendar days, plus contributions due later.
         const dim = daysInMonth(key);
         const day = clampDay(record.day, key);
-        const growth = Math.max(0, record.value) * (Math.pow(1 + monthlyRate, (dim - day) / dim) - 1);
         const contributions = (f?.contributionsByDay ?? [])
           .filter((c) => (c.day ?? 1) > day)
           .reduce((s, c) => s + c.amount, 0);
+        const growth = cappedGrowth(
+          a,
+          record.value + contributions,
+          Math.max(0, record.value) * (Math.pow(1 + monthlyRate, (dim - day) / dim) - 1),
+        );
         cell = {
           start,
           growth,
@@ -300,16 +337,29 @@ export function projectAccounts(
       }
 
       if (a.kind === "gia") {
-        // Basis grows with the month's full contributions (they are real
-        // money in whether or not a record absorbs them); withdrawals take
-        // basis out proportionally to the value sold. Growth and recorded
-        // balances change the embedded gain, never the basis.
-        let b = basis.get(a.id)! + monthContributions;
-        const valueBeforeWithdrawal = start + monthGrowth + monthContributions;
-        if (monthWithdrawals > 0 && valueBeforeWithdrawal > 0) {
-          b -= monthWithdrawals * (b / valueBeforeWithdrawal);
+        let b: number;
+        if (record?.basis != null) {
+          // A recorded basis re-anchors it; contributions due after the record still add.
+          b = record.basis + cell.contributions;
+        } else {
+          // Basis grows with the month's full contributions (they are real money in whether
+          // or not a record absorbs them); withdrawals take basis out in proportion to the
+          // value sold — the recorded value, when there is one. Growth and recorded balances
+          // change the embedded gain, never the basis.
+          b = basis.get(a.id)! + monthContributions;
+          const valueBeforeWithdrawal = cell.end + monthWithdrawals;
+          if (monthWithdrawals > 0 && valueBeforeWithdrawal > 0) {
+            b -= monthWithdrawals * (b / valueBeforeWithdrawal);
+          }
         }
         basis.set(a.id, Math.max(0, b));
+      }
+
+      if (a.kind === "gilts" && a.maturityYear != null && a.maturityYear <= Number(endMonth.slice(0, 4)) && key === range[0]) {
+        warnings.push(
+          `${a.name} matures in ${a.maturityYear}, by the end of the projection — it is still held at ` +
+            `nominal value; record the redemption (a balance of 0, and the cash where it went) when it happens.`,
+        );
       }
 
       byAccount[a.id] = cell;
@@ -464,6 +514,7 @@ export function sampleAtDate(
   const { flows } = monthlyFlows(
     [...expenseMonths, ...result.assumedMonths].filter((m) => m.key === monthKey).slice(0, 1),
     result.accounts,
+    [monthKey],
   );
   const monthFlows = flows.get(monthKey);
   for (const a of result.accounts) {
@@ -471,18 +522,17 @@ export function sampleAtDate(
     if (!cell) continue;
     // Latest record on or before the date, with the engine's tie-breaking
     // (null day = end of month, later entries win ties).
-    let anchor: { eff: number; day: number; value: number } | null = null;
+    let anchor: { eff: number; day: number; value: number; basis: number | null } | null = null;
     for (const o of data.overrides) {
       if (o.accountId !== a.id || o.monthKey !== monthKey) continue;
       const oDay = clampDay(o.day, monthKey);
       if (oDay > day) continue;
       const eff = o.day ?? 32;
-      if (!anchor || eff >= anchor.eff) anchor = { eff, day: oDay, value: o.value };
+      if (!anchor || eff >= anchor.eff) anchor = { eff, day: oDay, value: o.value, basis: o.basis ?? null };
     }
     const from = anchor?.day ?? 0;
     const base = anchor?.value ?? cell.start;
     const monthlyRate = annualToMonthly(rates[a.kind]);
-    const growth = Math.max(0, base) * (Math.pow(1 + monthlyRate, (day - from) / dim) - 1);
     const f = monthFlows?.get(a.id);
     const byDay = f?.contributionsByDay ?? [];
     const contributions = byDay
@@ -494,18 +544,28 @@ export function sampleAtDate(
     // Income lines carry no due day: they move at the start of the month, so
     // they are gone by any sampled day and inside any anchor.
     const withdrawals = anchor ? 0 : (f?.withdrawals ?? 0);
+    const growth = cappedGrowth(
+      a,
+      base + contributions - withdrawals,
+      Math.max(0, base) * (Math.pow(1 + monthlyRate, (day - from) / dim) - 1),
+    );
     balances[a.id] = base + growth + contributions - withdrawals;
 
     if (a.kind === "gia") {
-      const prevBasis = monthIdx > 0 ? (result.months[monthIdx - 1].basis[a.id] ?? 0) : openingBasis(a);
-      const allContribs = f?.contributions ?? 0;
-      const dueContribs = byDay.filter((c) => (c.day ?? 1) <= day).reduce((s, c) => s + c.amount, 0);
-      const W = f?.withdrawals ?? 0;
-      // Mirrors projectAccounts: withdrawals remove basis in proportion to the value sold.
-      const valueBeforeWithdrawal = cell.start + Math.max(0, cell.start) * monthlyRate + allContribs;
-      let b = prevBasis + dueContribs;
-      if (W > 0 && valueBeforeWithdrawal > 0) b -= W * ((prevBasis + allContribs) / valueBeforeWithdrawal);
-      basis[a.id] = Math.max(0, b);
+      if (anchor?.basis != null) {
+        // Mirrors projectAccounts: a recorded basis re-anchors it.
+        basis[a.id] = Math.max(0, anchor.basis + contributions);
+      } else {
+        const prevBasis = monthIdx > 0 ? (result.months[monthIdx - 1].basis[a.id] ?? 0) : openingBasis(a);
+        const allContribs = f?.contributions ?? 0;
+        const dueContribs = byDay.filter((c) => (c.day ?? 1) <= day).reduce((s, c) => s + c.amount, 0);
+        const W = f?.withdrawals ?? 0;
+        // Mirrors projectAccounts: withdrawals remove basis in proportion to the value sold.
+        const valueBeforeWithdrawal = cell.end + W;
+        let b = prevBasis + dueContribs;
+        if (W > 0 && valueBeforeWithdrawal > 0) b -= W * ((prevBasis + allContribs) / valueBeforeWithdrawal);
+        basis[a.id] = Math.max(0, b);
+      }
     }
   }
   return { balances, basis };

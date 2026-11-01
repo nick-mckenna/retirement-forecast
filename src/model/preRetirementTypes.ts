@@ -4,8 +4,8 @@
 // Accounts are a user-editable registry of the couple's real accounts
 // ("Nick ISA", "Tracy Premium Bonds", …). Each account has an owner
 // and a kind; the kind decides its growth rate (via the scenario's Rates) and
-// which retirement pot it folds into at handoff (savings + premiumBonds merge
-// into the scenario's savings pot, everything else maps 1:1). Expense/income
+// which retirement pot it folds into at handoff (each kind maps 1:1 onto a
+// pot; Premium Bonds keep their own tax-free pot). Expense/income
 // lines are tagged with an account's id, the projection engine
 // (src/preretirement/project.ts) grows each account month by month, and a
 // linked retirement scenario reads its starting balances from the projection.
@@ -51,6 +51,16 @@ export interface InvestmentAccount {
   /** GIA accounts only: embedded capital-gain fraction (0..1) of the opening
    *  balance, seeding the cost basis for the CGT handoff; null for other kinds. */
   openingGainFraction: number | null;
+  /** Pension accounts only: contributions tagged from the joint account are paid net and
+   *  the provider adds basic-rate relief (relief at source), so the pot receives amount ×
+   *  1.25. False for net-pay or salary-sacrifice schemes, and for every other kind. */
+  reliefAtSource: boolean;
+  /** Paid in from outside the joint account (employer, salary sacrifice) — already gross —
+   *  on the last day of every month. 0 = none. */
+  externalMonthlyContribution: number;
+  /** Gilts accounts only: the calendar year the holding matures; null when unknown or for
+   *  other kinds. Only used to warn when it matures before the retirement handoff. */
+  maturityYear: number | null;
 }
 
 /** Re-anchors one account's projection: `value` is the account's actual
@@ -67,6 +77,9 @@ export interface BalanceOverride {
    *  the end of the month. Days past the month's length clamp to its last day. */
   day: number | null;
   value: number;
+  /** GIA accounts only: the cost basis at the same moment (from the platform's statement),
+   *  re-anchoring the tracked basis; null = keep tracking it. */
+  basis: number | null;
 }
 
 /** Root object for the pre-retirement module. Global, not per-scenario. */
@@ -104,6 +117,9 @@ export function defaultPreRetirementData(): PreRetirementData {
     kind,
     openingBalance: 0,
     openingGainFraction: kind === "gia" ? 0 : null,
+    reliefAtSource: false,
+    externalMonthlyContribution: 0,
+    maturityYear: null,
   });
   return {
     openingMonth: currentMonthKey(),
