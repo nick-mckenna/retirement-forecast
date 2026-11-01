@@ -28,6 +28,7 @@ export function TaxView({ result, scenario }: { result: SimResult; scenario: Sce
               <th>{tracy} CGT</th>
               <th>Total tax</th>
               <th>Net worth</th>
+              <th title="Net worth less the income tax still to come on the pensions left (drawn evenly over ten years)">After pension tax</th>
             </tr>
           </thead>
           <tbody>
@@ -52,6 +53,7 @@ export function TaxView({ result, scenario }: { result: SimResult; scenario: Sce
                   <td>{money(y.tax.tracy.cgt)}</td>
                   <td>{money(total)}</td>
                   <td>{money(y.netWorthEnd)}</td>
+                  <td>{money(y.netWorthAfterPensionTax)}</td>
                 </tr>
               );
             })}

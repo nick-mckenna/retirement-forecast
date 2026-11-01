@@ -152,6 +152,15 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   and uprated by `rates.statePensionGrowth`, or the triple-lock floor `max(inflation, 2.5%)` when
   null. **Marriage allowance** (`Scenario.married`, `coupleYearTax`) is applied when both partners are
   within the basic rate and it saves tax.
+- **Premium Bonds** are their own pot (`StartingBalances.premiumBonds`, `AccountState.premiumBonds`,
+  prize rate `Rates.premiumBondRate`): cash-like and part of the buffer, but their prizes are tax-free
+  (never savings income) and are reinvested up to the £50,000 limit, paid out as cash beyond it.
+  They are shown inside the ledger's cash (savings) column, so the Excel column letters don't move;
+  draws, purchases and tax take plain cash first, then Premium Bonds (`takeCash`), then gilts.
+- **Deferred pension tax** (display only): each `YearSummary` reports the income tax still to come on
+  the pensions left at year end, priced as drawn evenly over ten years on top of the State Pension
+  after any Lump Sum Allowance left, and `netWorthAfterPensionTax` (KPI, TaxView, Excel Tax Summary).
+  The optimiser objective doesn't use it; inheritance tax on pensions (from April 2027) isn't modelled.
 
 ## Pre-retirement forecast
 
@@ -192,7 +201,7 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   everything from the next day, which is the no-double-counting rule (`handoffMonthKey` returns the
   month the projection must reach; null for an invalid date). `Scenario.linkPreRetirement` (toggle in
   InputsPanel) makes `resolveScenarioForRun` replace the scenario's starting balances with the
-  projection (savings + premiumBonds merge into `savings`; gilts flows; `giaGainFraction`
+  projection (premiumBonds keep their own pot; gilts flow; `giaGainFraction`
   computed from the tracked basis) before `RetirementApp` calls `runForecast` — the engine is
   never modified. Falls back to manual balances (with a warning) when the projection can't cover
   the handoff month.

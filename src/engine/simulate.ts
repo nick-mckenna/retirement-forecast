@@ -1,7 +1,6 @@
 import type { PersonId, Scenario } from "../model/types";
 import { annualToMonthly } from "../model/rates";
 import { resolveIncome, targetForYear } from "../model/incomeTargets";
-import { coupleYearTax } from "../tax/personTax";
 import {
   statePensionForYear,
   statePensionGrowth,
@@ -9,7 +8,8 @@ import {
   statePensionRate,
   statePensionStartDate,
 } from "../tax/statePension";
-import { lsaUsedBy, pensionGrossForTaxable } from "../tax/pensionDraw";
+import { lsaUsedBy, pensionGrossForTaxable, pensionTaxable } from "../tax/pensionDraw";
+import { coupleYearTax, personYearTax } from "../tax/personTax";
 import { resolveTaxParams } from "../tax/taxParams";
 import { ageAtTaxYearStart, ageOn, addMonths, modelStartDate, parseDate, toIso } from "../tax/taxYear";
 import { bufferTarget, currentBuffer } from "../strategy/buffer";
@@ -26,6 +26,9 @@ import { emptyPersonColumns, type LedgerRow, type PersonColumns } from "./ledger
 import { giaGainFraction, giltValue, initState, sellGia, sellGilts, type SimState } from "./state";
 
 const PERSONS: PersonId[] = ["nick", "tracy"];
+
+/** NS&I's maximum Premium Bond holding per person. */
+const PREMIUM_BOND_LIMIT = 50_000;
 
 export interface PersonTax {
   incomeTax: number;
@@ -68,6 +71,11 @@ export interface YearSummary {
   withdrawals: Withdrawal[];
   giltPurchasesValue: number;
   disposals: YearDisposals;
+  /** Income tax still to come on the pensions left at year end, if drawn evenly over ten
+   *  years on top of the State Pension (after any Lump Sum Allowance left). Display only. */
+  deferredPensionTax: number;
+  /** netWorthEnd less deferredPensionTax. */
+  netWorthAfterPensionTax: number;
 }
 
 function newDisposals(): YearDisposals {
@@ -155,6 +163,7 @@ export function simulate(scenario: Scenario): SimResult {
 
   const mInv = annualToMonthly(scenario.rates.investmentGrowth);
   const mSav = annualToMonthly(scenario.rates.savingsInterest);
+  const mPB = annualToMonthly(scenario.rates.premiumBondRate);
   const startDate = parseDate(scenario.startDate);
   // The model runs from the day after the starting balances; the income start year is the
   // tax year that day falls in (resolveIncome derives it), so a mid-year start gives a part
@@ -226,7 +235,7 @@ export function simulate(scenario: Scenario): SimResult {
       isa: b.isa,
       pension: b.pension,
       gia: b.gia,
-      savings: b.savings,
+      savings: b.savings + b.premiumBonds, // Premium Bonds are cash-like: shown with cash
       giltsTotal: giltValue(state, id),
       tax: 0,
     };
@@ -513,6 +522,12 @@ export function simulate(scenario: Scenario): SimResult {
         acc.gia += giaG;
         acc.savings += savG;
         accum.savingsIncome[id] += savG;
+        // Premium Bond prizes are tax-free (never savings income); they are reinvested up to the
+        // £50,000 holding limit and paid out as cash beyond it.
+        const prize = Math.max(0, acc.premiumBonds) * mPB;
+        const reinvest = Math.max(0, Math.min(prize, PREMIUM_BOND_LIMIT - acc.premiumBonds));
+        acc.premiumBonds += reinvest;
+        acc.savings += prize - reinvest;
         // GIA dividend portion of the total return is taxable (assumed reinvested). A yield
         // is paid out pro rata, not compounded, so the monthly slice is simply yield / 12.
         // Reinvesting it buys more holding, so it adds to the cost basis — otherwise it would
@@ -520,7 +535,7 @@ export function simulate(scenario: Scenario): SimResult {
         const div = Math.max(0, acc.gia) * (scenario.rates.giaDividendYield / 12);
         accum.dividends[id] += div;
         acc.giaBasis += div;
-        gd[id] = { isa: isaG, pension: penG, gia: giaG, savings: savG };
+        gd[id] = { isa: isaG, pension: penG, gia: giaG, savings: savG + prize };
       }
       txRow("Growth", toIso(monthDate), gd);
 
@@ -731,6 +746,16 @@ export function simulate(scenario: Scenario): SimResult {
     if (nw <= 0 && !warnings.some((w) => w.includes("depleted"))) {
       warnings.push(`Portfolio depleted around tax year ${y}/${y + 1}.`);
     }
+    let deferredPensionTax = 0;
+    for (const id of PERSONS) {
+      const acc = state.balances[id];
+      if (acc.pension <= 1) continue;
+      const slice = pensionTaxable(acc.pension, acc.lsaRemaining) / 10;
+      const sp = statePensionForYear(scenario.people[id], y + 1, modelStartYear, spGrowth);
+      const base = { savings: 0, dividends: 0, gain: 0 };
+      deferredPensionTax +=
+        10 * (personYearTax({ ...base, nonSavings: sp + slice }, p).total - personYearTax({ ...base, nonSavings: sp }, p).total);
+    }
     years.push({
       taxYearStart: y,
       nickAge: ageAtTaxYearStart(scenario.people.nick.dob, y),
@@ -743,6 +768,8 @@ export function simulate(scenario: Scenario): SimResult {
       withdrawals,
       giltPurchasesValue: giltValue(state),
       disposals,
+      deferredPensionTax: round2(deferredPensionTax),
+      netWorthAfterPensionTax: round2(nw - deferredPensionTax),
     });
   }
 
@@ -880,23 +907,49 @@ function payTax(state: SimState, bill: Record<PersonId, number>): Record<PersonI
     const cover = Math.min(short[id], Math.max(0, state.balances[other].savings));
     state.balances[other].savings -= cover;
     taken[other] += cover;
-    state.balances[id].savings -= short[id] - cover;
-    taken[id] += short[id] - cover;
+    // Then Premium Bonds (own, then spouse's) before overdrawing the liable person.
+    let rest = short[id] - cover;
+    for (const who of [id, other]) {
+      const fromPB = Math.min(rest, Math.max(0, state.balances[who].premiumBonds));
+      state.balances[who].premiumBonds -= fromPB;
+      taken[who] += fromPB;
+      rest -= fromPB;
+    }
+    state.balances[id].savings -= rest;
+    taken[id] += rest;
   }
   return taken;
 }
 
+/**
+ * Take up to `amount` from the couple's cash in order — each listed person's plain cash, then
+ * each one's Premium Bonds (cash-like, but their prizes are tax-free, so they are kept longest).
+ * Adds what came from each person to `taken`; returns what is still owed.
+ */
+function takeCash(state: SimState, order: PersonId[], amount: number, taken: Record<PersonId, number>): number {
+  let remaining = amount;
+  for (const pot of ["savings", "premiumBonds"] as const) {
+    for (const who of order) {
+      if (remaining <= 0.005) return remaining;
+      const take = Math.min(remaining, Math.max(0, state.balances[who][pot]));
+      state.balances[who][pot] -= take;
+      taken[who] += take;
+      remaining -= take;
+    }
+  }
+  return remaining;
+}
+
 /** Remove `amount` of cash from the couple's savings (nick first, then tracy). */
 function spendCash(state: SimState, amount: number): Record<PersonId, number> {
-  const nickAvail = Math.max(0, state.balances.nick.savings);
-  const tracyAvail = Math.max(0, state.balances.tracy.savings);
-  let nick = Math.min(amount, nickAvail);
-  let tracy = Math.min(amount - nick, tracyAvail);
-  const short = amount - nick - tracy;
-  if (short > 0) nick += short; // overdraw (plan can't fully fund it) — surfaced as a warning
-  state.balances.nick.savings -= nick;
-  state.balances.tracy.savings -= tracy;
-  return { nick, tracy };
+  const taken: Record<PersonId, number> = { nick: 0, tracy: 0 };
+  const short = takeCash(state, ["nick", "tracy"], amount, taken);
+  if (short > 0) {
+    // Overdraw (the plan can't fully fund it) — surfaced as a warning.
+    state.balances.nick.savings -= short;
+    taken.nick += short;
+  }
+  return taken;
 }
 
 /**
@@ -913,14 +966,7 @@ function drawFromBuffer(
   const other: PersonId = id === "nick" ? "tracy" : "nick";
   const cash: Record<PersonId, number> = { nick: 0, tracy: 0 };
   const gilts: Record<PersonId, number> = { nick: 0, tracy: 0 };
-  let remaining = amount;
-  for (const who of [id, other]) {
-    if (remaining <= 0.005) break;
-    const take = Math.min(remaining, Math.max(0, state.balances[who].savings));
-    state.balances[who].savings -= take;
-    cash[who] += take;
-    remaining -= take;
-  }
+  let remaining = takeCash(state, [id, other], amount, cash);
   for (const who of [id, other]) {
     if (remaining <= 0.005) break;
     const sold = sellGilts(state, who, remaining);

@@ -28,7 +28,10 @@ export interface StartingBalances {
   pension: number;
   gia: number;
   savings: number;
-  /** Total value of gilts already held at the start (added to first ladder rung). */
+  /** NS&I Premium Bonds: cash-like (part of the buffer) but prizes are tax-free; holdings are
+   *  capped at £50,000 per person, so prizes beyond the cap are paid out as cash. */
+  premiumBonds: number;
+  /** Total value of gilts already held at the start (spread across the first ladder rungs). */
   gilts: number;
   /**
    * Assumed embedded capital gain fraction of the GIA (0..1). Used so that GIA
@@ -42,6 +45,8 @@ export interface Rates {
   investmentGrowth: number;
   /** Annual cash/savings interest, e.g. 0.035. */
   savingsInterest: number;
+  /** Expected Premium Bond prize rate (tax-free), e.g. 0.036. */
+  premiumBondRate: number;
   /** Annual inflation used to grow income targets & (optionally) tax thresholds, e.g. 0.03. */
   inflation: number;
   /** Assumed coupon rate on newly purchased gilts (taxable savings income). */

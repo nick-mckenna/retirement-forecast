@@ -77,6 +77,7 @@ const SCHEMA: string[] = [
      startDate DATE NOT NULL,
      investmentGrowth FLOAT NOT NULL,
      savingsInterest FLOAT NOT NULL,
+     premiumBondRate FLOAT NULL,
      inflation FLOAT NOT NULL,
      giltCoupon FLOAT NOT NULL,
      giaDividendYield FLOAT NOT NULL,
@@ -119,6 +120,7 @@ const SCHEMA: string[] = [
      pension FLOAT NOT NULL,
      gia FLOAT NOT NULL,
      savings FLOAT NOT NULL,
+     premiumBonds FLOAT NOT NULL CONSTRAINT DF_ScenarioPerson_premiumBonds DEFAULT 0,
      gilts FLOAT NOT NULL,
      giaGainFraction FLOAT NOT NULL,
      finalIncomeNet FLOAT NOT NULL,
@@ -277,6 +279,11 @@ const SCHEMA: string[] = [
    ALTER TABLE dbo.Scenario ADD married BIT NOT NULL CONSTRAINT DF_Scenario_married DEFAULT 0`,
   `IF COL_LENGTH(N'dbo.Scenario', N'statePensionGrowth') IS NULL
    ALTER TABLE dbo.Scenario ADD statePensionGrowth FLOAT NULL`,
+  `IF COL_LENGTH(N'dbo.ScenarioPerson', N'premiumBonds') IS NULL
+   ALTER TABLE dbo.ScenarioPerson ADD premiumBonds FLOAT NOT NULL
+     CONSTRAINT DF_ScenarioPerson_premiumBonds DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'premiumBondRate') IS NULL
+   ALTER TABLE dbo.Scenario ADD premiumBondRate FLOAT NULL`,
   `IF COL_LENGTH(N'dbo.ScenarioPerson', N'lumpSumAllowanceUsed') IS NULL
    ALTER TABLE dbo.ScenarioPerson ADD lumpSumAllowanceUsed FLOAT NOT NULL
      CONSTRAINT DF_ScenarioPerson_lumpSumAllowanceUsed DEFAULT 0`,

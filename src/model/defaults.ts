@@ -36,12 +36,13 @@ export function defaultScenario(): Scenario {
       },
     },
     balances: {
-      nick: { isa: 200000, pension: 1000000, gia: 90000, savings: 50000, gilts: 15000, giaGainFraction: 0.3 },
-      tracy: { isa: 180000, pension: 750000, gia: 90000, savings: 75000, gilts: 0, giaGainFraction: 0.3 },
+      nick: { isa: 200000, pension: 1000000, gia: 90000, savings: 50000, premiumBonds: 0, gilts: 15000, giaGainFraction: 0.3 },
+      tracy: { isa: 180000, pension: 750000, gia: 90000, savings: 75000, premiumBonds: 0, gilts: 0, giaGainFraction: 0.3 },
     },
     rates: {
       investmentGrowth: 0.07,
       savingsInterest: 0.035,
+      premiumBondRate: 0.035,
       inflation: 0.03,
       giltCoupon: 0.04,
       giaDividendYield: 0.02,

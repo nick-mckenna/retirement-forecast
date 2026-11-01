@@ -11,6 +11,8 @@ export interface AccountState {
   giaBasis: number;
   /** Lump Sum Allowance still available: pension draws are 25% tax-free only while it lasts. */
   lsaRemaining: number;
+  /** Premium Bonds: cash-like, tax-free prizes; shown inside the savings (cash) column. */
+  premiumBonds: number;
 }
 
 export interface GiltHolding {
@@ -42,6 +44,7 @@ export function initState(scenario: Scenario): SimState {
       pension: b.pension,
       gia: b.gia,
       savings: b.savings,
+      premiumBonds: b.premiumBonds ?? 0,
       giaBasis: b.gia * (1 - b.giaGainFraction),
       lsaRemaining: Math.max(0, LUMP_SUM_ALLOWANCE - (scenario.people[id].lumpSumAllowanceUsed ?? 0)),
     };

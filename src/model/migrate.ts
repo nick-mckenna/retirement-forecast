@@ -49,7 +49,15 @@ export function migrateScenario(s: Scenario): Scenario {
     startDate,
     linkPreRetirement: s.linkPreRetirement ?? false,
     people: { nick: person("nick"), tracy: person("tracy") },
-    rates: { ...s.rates, statePensionGrowth: s.rates.statePensionGrowth ?? null },
+    balances: {
+      nick: { ...s.balances.nick, premiumBonds: s.balances.nick.premiumBonds ?? 0 },
+      tracy: { ...s.balances.tracy, premiumBonds: s.balances.tracy.premiumBonds ?? 0 },
+    },
+    rates: {
+      ...s.rates,
+      statePensionGrowth: s.rates.statePensionGrowth ?? null,
+      premiumBondRate: s.rates.premiumBondRate ?? s.rates.savingsInterest,
+    },
     married: s.married ?? false,
     income: {
       ...s.income,

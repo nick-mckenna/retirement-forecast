@@ -29,6 +29,7 @@ export interface ScenarioRow {
   linkPreRetirement: SqlBool;
   investmentGrowth: SqlNum;
   savingsInterest: SqlNum;
+  premiumBondRate: SqlNum | null;
   inflation: SqlNum;
   giltCoupon: SqlNum;
   giaDividendYield: SqlNum;
@@ -68,6 +69,7 @@ export interface PersonRow {
   pension: SqlNum;
   gia: SqlNum;
   savings: SqlNum;
+  premiumBonds: SqlNum;
   gilts: SqlNum;
   giaGainFraction: SqlNum;
   finalIncomeNet: SqlNum;
@@ -125,6 +127,7 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       linkPreRetirement: s.linkPreRetirement,
       investmentGrowth: s.rates.investmentGrowth,
       savingsInterest: s.rates.savingsInterest,
+      premiumBondRate: s.rates.premiumBondRate,
       inflation: s.rates.inflation,
       giltCoupon: s.rates.giltCoupon,
       giaDividendYield: s.rates.giaDividendYield,
@@ -163,6 +166,7 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       pension: s.balances[pid].pension,
       gia: s.balances[pid].gia,
       savings: s.balances[pid].savings,
+      premiumBonds: s.balances[pid].premiumBonds,
       gilts: s.balances[pid].gilts,
       giaGainFraction: s.balances[pid].giaGainFraction,
       finalIncomeNet: s.finalIncome.perPerson[pid].net,
@@ -212,6 +216,7 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
     pension: num(row.pension),
     gia: num(row.gia),
     savings: num(row.savings),
+    premiumBonds: num(row.premiumBonds ?? 0),
     gilts: num(row.gilts),
     giaGainFraction: num(row.giaGainFraction),
   });
@@ -226,6 +231,8 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
     rates: {
       investmentGrowth: num(sc.investmentGrowth),
       savingsInterest: num(sc.savingsInterest),
+      // Rows saved before Premium Bonds had their own rate assume the savings rate.
+      premiumBondRate: num(sc.premiumBondRate ?? sc.savingsInterest),
       inflation: num(sc.inflation),
       giltCoupon: num(sc.giltCoupon),
       giaDividendYield: num(sc.giaDividendYield),

@@ -83,7 +83,7 @@ export function ratesForKinds(rates: Rates): KindRates {
     pension: rates.investmentGrowth,
     gia: rates.investmentGrowth,
     savings: rates.savingsInterest,
-    premiumBonds: rates.savingsInterest,
+    premiumBonds: rates.premiumBondRate,
     gilts: rates.giltCoupon,
   };
 }

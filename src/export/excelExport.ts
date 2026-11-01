@@ -202,6 +202,7 @@ function buildTaxSummary(wb: ExcelJS.Workbook, scenario: Scenario, result: SimRe
     `${t} Income Tax`,
     `${t} CGT`,
     "Total Tax",
+    "Net Worth After Pension Tax",
   ]);
   ws.getRow(1).font = { bold: true };
   for (const y of result.years) {
@@ -219,8 +220,9 @@ function buildTaxSummary(wb: ExcelJS.Workbook, scenario: Scenario, result: SimRe
       y.tax.tracy.incomeTax,
       y.tax.tracy.cgt,
       total,
+      y.netWorthAfterPensionTax,
     ]);
-    for (let c = 4; c <= 12; c++) r.getCell(c).numFmt = GBP;
+    for (let c = 4; c <= 13; c++) r.getCell(c).numFmt = GBP;
   }
   ws.columns.forEach((c) => (c.width = 15));
 }

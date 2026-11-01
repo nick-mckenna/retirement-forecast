@@ -219,13 +219,13 @@ export function InputsPanel() {
         {lb ? (
           <>
             <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
-              Projected by the Pre-retirement module as at the end of {s.startDate}. Savings includes
-              Premium Bonds.
+              Projected by the Pre-retirement module as at the end of {s.startDate}.
             </p>
             <ValueRow label="ISA" value={money(lb.isa)} />
             <ValueRow label="Pension" value={money(lb.pension)} />
             <ValueRow label="GIA" value={money(lb.gia)} />
             <ValueRow label="Savings" value={money(lb.savings)} />
+            <ValueRow label="Premium Bonds" value={money(lb.premiumBonds)} />
             <ValueRow label="Gilts" value={money(lb.gilts)} />
             <ValueRow label="GIA embedded gain" value={pct(lb.giaGainFraction)} />
           </>
@@ -235,6 +235,12 @@ export function InputsPanel() {
             <NumField label="Pension" value={b.pension} step={1000} onChange={(v) => set((sc) => (sc.balances[id].pension = v))} />
             <NumField label="GIA" value={b.gia} step={1000} onChange={(v) => set((sc) => (sc.balances[id].gia = v))} />
             <NumField label="Savings" value={b.savings} step={1000} onChange={(v) => set((sc) => (sc.balances[id].savings = v))} />
+            <NumField
+              label="Premium Bonds"
+              value={b.premiumBonds}
+              step={1000}
+              onChange={(v) => set((sc) => (sc.balances[id].premiumBonds = Math.max(0, v)))}
+            />
             <NumField label="Gilts" value={b.gilts} step={1000} onChange={(v) => set((sc) => (sc.balances[id].gilts = v))} />
             <PctField label="GIA embedded gain" value={b.giaGainFraction} onChange={(v) => set((sc) => (sc.balances[id].giaGainFraction = v))} />
           </>
@@ -249,6 +255,11 @@ export function InputsPanel() {
         <h2>Rates</h2>
         <PctField label="Investment growth" value={s.rates.investmentGrowth} onChange={(v) => update((sc) => (sc.rates.investmentGrowth = v))} />
         <PctField label="Savings interest" value={s.rates.savingsInterest} onChange={(v) => update((sc) => (sc.rates.savingsInterest = v))} />
+        <PctField
+          label="Premium Bond prize rate (tax-free)"
+          value={s.rates.premiumBondRate}
+          onChange={(v) => update((sc) => (sc.rates.premiumBondRate = v))}
+        />
         <PctField label="Inflation" value={s.rates.inflation} onChange={(v) => update((sc) => (sc.rates.inflation = v))} />
         <PctField label="Gilt coupon" value={s.rates.giltCoupon} onChange={(v) => update((sc) => (sc.rates.giltCoupon = v))} />
         <PctField label="GIA dividend yield" value={s.rates.giaDividendYield} onChange={(v) => update((sc) => (sc.rates.giaDividendYield = v))} />

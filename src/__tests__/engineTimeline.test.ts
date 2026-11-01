@@ -265,3 +265,52 @@ describe("proactive crystallisation", () => {
     expectLedgerReconciles(r.rows);
   });
 });
+
+describe("Premium Bonds", () => {
+  it("pay tax-free prizes: the same money in savings would be taxed as interest", () => {
+    const asBonds = defaultScenario();
+    asBonds.balances.tracy = { ...asBonds.balances.tracy, premiumBonds: 40_000 };
+    const asCash = defaultScenario();
+    asCash.balances.tracy = { ...asCash.balances.tracy, savings: asCash.balances.tracy.savings + 40_000 };
+    const y0b = simulate(asBonds).years[0].tax.tracy.savingsIncome;
+    const y0c = simulate(asCash).years[0].tax.tracy.savingsIncome;
+    expect(y0c - y0b).toBeGreaterThan(40_000 * 0.03); // ~a year's interest on 40k is missing
+  });
+
+  it("fund the income draw after plain cash and before gilts are sold, and reconcile in the ledger", () => {
+    const s = giltsOnly();
+    s.balances.nick.premiumBonds = 50_000;
+    s.balances.tracy.premiumBonds = 50_000;
+    const r = simulate(s);
+    expect(r.years[0].disposals.giltSales.nick).toBeLessThan(1); // 100k of bonds cover the first year
+    expectLedgerReconciles(r.rows);
+  });
+});
+
+describe("deferred pension tax (reporting)", () => {
+  it("prices the pensions left at each year end and nets them off net worth", () => {
+    const r = simulate(defaultScenario());
+    const last = r.years[r.years.length - 1];
+    expect(last.deferredPensionTax).toBeGreaterThan(0);
+    expect(last.netWorthAfterPensionTax).toBeCloseTo(last.netWorthEnd - last.deferredPensionTax, 1);
+  });
+
+  it("is zero when no pension is left", () => {
+    const s = defaultScenario();
+    s.balances.nick.pension = 0;
+    s.balances.tracy.pension = 0;
+    for (const y of simulate(s).years) expect(y.deferredPensionTax).toBe(0);
+  });
+});
+
+describe("migration of Premium Bond fields", () => {
+  it("backfills a zero holding and the savings rate as the prize rate", () => {
+    const s = defaultScenario() as unknown as Record<string, any>;
+    delete s.balances.nick.premiumBonds;
+    delete s.rates.premiumBondRate;
+    s.rates.savingsInterest = 0.031;
+    const m = migrateScenario(s as any);
+    expect(m.balances.nick.premiumBonds).toBe(0);
+    expect(m.rates.premiumBondRate).toBe(0.031);
+  });
+});

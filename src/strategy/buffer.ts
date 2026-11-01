@@ -31,6 +31,7 @@ export function bufferTarget(need: NeedFn, strategy: StrategyConfig, nextTaxYear
 }
 
 export function currentBuffer(state: SimState): number {
-  const cash = state.balances.nick.savings + state.balances.tracy.savings;
+  const { nick, tracy } = state.balances;
+  const cash = nick.savings + nick.premiumBonds + tracy.savings + tracy.premiumBonds;
   return cash + giltValue(state);
 }

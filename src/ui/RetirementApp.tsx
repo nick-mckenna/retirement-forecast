@@ -87,6 +87,10 @@ export function RetirementApp() {
             <div className="v">{money(last?.netWorthEnd ?? 0)}</div>
             <div className="l">Net worth {last ? last.taxYearStart + 1 : ""}</div>
           </div>
+          <div className="box" title="Net worth less the income tax still to come on the pensions left at the end (drawn evenly over ten years on top of the State Pension). Pensions entering the inheritance-tax estate from April 2027 is not modelled.">
+            <div className="v">{money(last?.netWorthAfterPensionTax ?? 0)}</div>
+            <div className="l">After tax still due on pensions</div>
+          </div>
           <div className="box">
             <div className="v">{money(totalTax)}</div>
             <div className="l">Total tax over plan</div>

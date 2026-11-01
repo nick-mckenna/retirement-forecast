@@ -18,6 +18,8 @@ function fullScenario(): Scenario {
   s.rates.statePensionGrowth = 0.03;
   s.people.nick.statePensionAge = 66.5; // a fractional override; tracy stays statutory (null)
   s.people.tracy.lumpSumAllowanceUsed = 40_000;
+  s.balances.nick.premiumBonds = 12_345;
+  s.rates.premiumBondRate = 0.041;
   s.taxPolicy = { freezeUntilYear: 2035, indexation: "custom", uprating: 0.02 }; // non-default, so the columns are exercised
   s.taxParams = [
     { year: 2029, personalAllowance: 14000, savingsBasicRate: 0.22 }, // sparse: only the edited fields

@@ -7,8 +7,8 @@
 //
 // Accounts aggregate into retirement pots by (owner, kind): isa→isa,
 // pension→pension, gia→gia (with the tracked cost basis turned into
-// giaGainFraction), savings + premiumBonds → savings (both count as
-// "savings" for the retirement buffer), gilts→gilts.
+// giaGainFraction), savings→savings, premiumBonds→premiumBonds (tax-free cash,
+// part of the buffer), gilts→gilts.
 
 import type { PersonId, Scenario, StartingBalances } from "../model/types";
 import type { ExpenseMonth } from "../model/expenseTypes";
@@ -52,7 +52,7 @@ export function handoffBalances(
   if (result.months.length === 0) return null;
   const out = {} as Record<PersonId, StartingBalances>;
   for (const p of PERSON_IDS) {
-    out[p] = { isa: 0, pension: 0, gia: 0, savings: 0, gilts: 0, giaGainFraction: 0 };
+    out[p] = { isa: 0, pension: 0, gia: 0, savings: 0, premiumBonds: 0, gilts: 0, giaGainFraction: 0 };
   }
   const giaBasis: Record<PersonId, number> = { nick: 0, tracy: 0 };
   for (const a of result.accounts) {
@@ -71,8 +71,10 @@ export function handoffBalances(
         giaBasis[a.owner] += sample.basis[a.id] ?? 0;
         break;
       case "savings":
-      case "premiumBonds":
         pots.savings += value;
+        break;
+      case "premiumBonds":
+        pots.premiumBonds += value;
         break;
       case "gilts":
         pots.gilts += value;
@@ -80,7 +82,7 @@ export function handoffBalances(
     }
   }
   const warnings: string[] = [];
-  const POTS = ["isa", "pension", "gia", "savings", "gilts"] as const;
+  const POTS = ["isa", "pension", "gia", "savings", "premiumBonds", "gilts"] as const;
   for (const p of PERSON_IDS) {
     for (const k of POTS) {
       if (out[p][k] < 0) {

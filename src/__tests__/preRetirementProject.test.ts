@@ -455,7 +455,7 @@ describe("handoff to the retirement forecast", () => {
     expect(handoffMonthKey("2028-01-01")).toBe("2028-01");
   });
 
-  it("aggregates accounts by owner and kind: pensions sum, savings + premium bonds merge, gilts flow", () => {
+  it("aggregates accounts by owner and kind: pensions sum, premium bonds keep their own pot, gilts flow", () => {
     const scenario = defaultScenario();
     scenario.linkPreRetirement = true;
     scenario.startDate = "2026-10-05"; // handoff: end of 5 October (3 months + 5/31 of October)
@@ -473,7 +473,8 @@ describe("handoff to the retirement forecast", () => {
     const at = (v: number, rate: number) => grow(v, rate, 3 / 12) * (1 + annualToMonthly(rate)) ** (5 / 31);
     expect(balances.nick.isa).toBeCloseTo(at(100, kinds.isa), 6);
     expect(balances.nick.pension).toBeCloseTo(at(200 + 300, kinds.pension), 6);
-    expect(balances.nick.savings).toBeCloseTo(at(400, kinds.savings) + at(50, kinds.premiumBonds), 6);
+    expect(balances.nick.savings).toBeCloseTo(at(400, kinds.savings), 6);
+    expect(balances.nick.premiumBonds).toBeCloseTo(at(50, kinds.premiumBonds), 6);
     expect(balances.nick.gilts).toBeCloseTo(at(600, kinds.gilts), 6);
     // Basis stays 7000 while the value grows, so the gain fraction rises.
     const gia = at(10000, kinds.gia);
@@ -514,10 +515,9 @@ describe("handoff to the retirement forecast", () => {
     const d = data([account({ id: "t-pb", owner: "tracy", kind: "premiumBonds", openingBalance: 1000 })]);
     const { scenario: out } = resolveScenarioForRun(scenario, d, []);
     expect(out).not.toBe(scenario);
-    expect(out.balances.tracy.savings).toBeCloseTo(
-      grow(1000, 0.035, 2 / 12) * (1 + annualToMonthly(0.035)) ** (5 / 30),
-      6,
-    );
+    const pb = scenario.rates.premiumBondRate;
+    expect(out.balances.tracy.premiumBonds).toBeCloseTo(grow(1000, pb, 2 / 12) * (1 + annualToMonthly(pb)) ** (5 / 30), 6);
+    expect(out.balances.tracy.savings).toBe(0);
     expect(out.balances.nick.isa).toBe(0); // projection replaces ALL pots, not just tagged ones
   });
 });
