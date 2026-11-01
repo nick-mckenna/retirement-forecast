@@ -18,6 +18,7 @@ function fullScenario(): Scenario {
   s.rates.statePensionGrowth = 0.03;
   s.people.nick.statePensionAge = 66.5; // a fractional override; tracy stays statutory (null)
   s.people.tracy.lumpSumAllowanceUsed = 40_000;
+  s.finalIncome.perPerson.tracy.employerPension = 35_000;
   s.balances.nick.premiumBonds = 12_345;
   s.rates.premiumBondRate = 0.041;
   s.rates.giltYieldShift = -0.0025;
@@ -89,6 +90,7 @@ describe("SQL row mapping", () => {
     expect(keys(back.purchases[0])).toEqual(keys(s.purchases[0]));
     expect(keys(back.overrides[0])).toEqual(keys(s.overrides[0]));
     expect(keys(back.finalIncome)).toEqual(keys(s.finalIncome));
+    expect(keys(back.finalIncome.perPerson.tracy)).toEqual(keys(s.finalIncome.perPerson.tracy));
   });
 
   it("preserves purchase list order and float precision", () => {

@@ -125,6 +125,7 @@ const SCHEMA: string[] = [
      giaGainFraction FLOAT NOT NULL,
      finalIncomeNet FLOAT NOT NULL,
      finalIncomeTax FLOAT NOT NULL,
+     finalIncomeEmployerPension FLOAT NOT NULL CONSTRAINT DF_ScenarioPerson_finalIncomeEmployerPension DEFAULT 0,
      CONSTRAINT PK_ScenarioPerson PRIMARY KEY (scenarioId, personId)
    )`,
   `IF OBJECT_ID(N'dbo.ScenarioTaxYearParams', N'U') IS NULL
@@ -361,6 +362,9 @@ const SCHEMA: string[] = [
   `IF COL_LENGTH(N'dbo.ScenarioPerson', N'lumpSumAllowanceUsed') IS NULL
    ALTER TABLE dbo.ScenarioPerson ADD lumpSumAllowanceUsed FLOAT NOT NULL
      CONSTRAINT DF_ScenarioPerson_lumpSumAllowanceUsed DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.ScenarioPerson', N'finalIncomeEmployerPension') IS NULL
+   ALTER TABLE dbo.ScenarioPerson ADD finalIncomeEmployerPension FLOAT NOT NULL
+     CONSTRAINT DF_ScenarioPerson_finalIncomeEmployerPension DEFAULT 0`,
   // State Pension age became an optional, fractional override (NULL = statutory).
   `IF EXISTS (SELECT 1 FROM sys.columns
              WHERE object_id = OBJECT_ID(N'dbo.ScenarioPerson') AND name = N'statePensionAge'

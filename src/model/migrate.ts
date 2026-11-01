@@ -76,6 +76,13 @@ export function migrateScenario(s: Scenario): Scenario {
     },
     taxPolicy,
     taxParams,
+    finalIncome: {
+      ...s.finalIncome,
+      perPerson: {
+        nick: { ...s.finalIncome.perPerson.nick, employerPension: s.finalIncome.perPerson.nick.employerPension ?? 0 },
+        tracy: { ...s.finalIncome.perPerson.tracy, employerPension: s.finalIncome.perPerson.tracy.employerPension ?? 0 },
+      },
+    },
     overrides: migrateOverrideKeys(s.overrides ?? []),
     purchases: s.purchases ?? [],
     schemaVersion: SCHEMA_VERSION,

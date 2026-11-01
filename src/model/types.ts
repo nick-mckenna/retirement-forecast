@@ -222,10 +222,12 @@ export interface Scenario {
   rates: Rates;
   income: IncomeTargetConfig;
   strategy: StrategyConfig;
-  /** One-off final employment income received on the first day of the new tax year. */
+  /** One-off final employment income received on the first day of the new tax year, with any
+   *  employer (e.g. director's) pension contribution paid on the same date. The contribution
+   *  goes straight into the pension: it is neither taxable income nor cash. */
   finalIncome: {
     date: string;
-    perPerson: Record<PersonId, { net: number; tax: number }>;
+    perPerson: Record<PersonId, { net: number; tax: number; employerPension: number }>;
   };
   /** Freeze/uprating assumption behind the projected default tax parameters. */
   taxPolicy: TaxPolicy;

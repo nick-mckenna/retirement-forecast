@@ -5,8 +5,12 @@
 export const PREMIUM_BOND_LIMIT = 50_000;
 
 /** Pension annual allowance (gross contributions per person per tax year). Simplified: no
- *  carry-forward of unused allowance, no taper for high incomes, no money-purchase limit. */
+ *  carry-forward of unused allowance and no taper for high incomes. */
 export const PENSION_ANNUAL_ALLOWANCE = 60_000;
+
+/** Money purchase annual allowance: the limit on contributions once a pension has been drawn
+ *  as taxable income (flexi-access drawdown or a lump sum with a taxable part). */
+export const MONEY_PURCHASE_ANNUAL_ALLOWANCE = 10_000;
 
 /** Relief at source: a member's net contribution is grossed up by basic-rate relief (20%),
  *  i.e. the pot receives net ÷ 0.8. Higher-rate relief is reclaimed through self-assessment

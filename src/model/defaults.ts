@@ -70,8 +70,8 @@ export function defaultScenario(): Scenario {
     finalIncome: {
       date: "2028-04-06",
       perPerson: {
-        nick: { net: 78000, tax: 22000 },
-        tracy: { net: 78000, tax: 22000 },
+        nick: { net: 78000, tax: 22000, employerPension: 0 },
+        tracy: { net: 78000, tax: 22000, employerPension: 0 },
       },
     },
     taxPolicy: { ...DEFAULT_TAX_POLICY },

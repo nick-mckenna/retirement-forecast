@@ -102,7 +102,11 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   **buffer refill** (sell investments), **gilt ladder** purchases, and finally computes income tax +
   CGT and settles it from cash. The final salary is earnings of its tax year: its gross counts
   towards that year's income and the PAYE entered with it is credited (`PersonTax.paidAtSource`), so
-  the year end settles only `due = total − paidAtSource` (negative = refund). GIA gains always come
+  the year end settles only `due = total − paidAtSource` (negative = refund). An employer (e.g.
+  director's) pension contribution entered with it (`finalIncome.perPerson[id].employerPension`)
+  goes straight into the pension on the same date — not income, not cash, not taxed — with a
+  warning above the £60,000 annual allowance, or the £10,000 MPAA once the pension has been drawn
+  (`EMPLOYER_PENSION_ROW_LABEL` in the ledger). GIA gains always come
   from the tracked cost basis (`giaBasis`, which reinvested dividends raise); sale plans see the live
   gain fraction, the CGT exempt amount the year has left, and pension access on the sale date. Every
   emitted `LedgerRow` is either a `BALANCE` snapshot or a `TRANSACTION` delta, mirroring the

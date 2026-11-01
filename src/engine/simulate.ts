@@ -22,7 +22,13 @@ import {
   type Withdrawal,
 } from "../strategy/drawdown";
 import { planGiltPurchases, type RealGiltMarket } from "../strategy/giltLadder";
-import { emptyPersonColumns, INCOME_ROW_LABELS, type LedgerRow, type PersonColumns } from "./ledger";
+import {
+  EMPLOYER_PENSION_ROW_LABEL,
+  emptyPersonColumns,
+  INCOME_ROW_LABELS,
+  type LedgerRow,
+  type PersonColumns,
+} from "./ledger";
 import {
   giaGainFraction,
   giltValue,
@@ -35,7 +41,11 @@ import {
   type GiltSalePrice,
   type SimState,
 } from "./state";
-import { PREMIUM_BOND_LIMIT } from "../tax/allowanceLimits";
+import {
+  MONEY_PURCHASE_ANNUAL_ALLOWANCE,
+  PENSION_ANNUAL_ALLOWANCE,
+  PREMIUM_BOND_LIMIT,
+} from "../tax/allowanceLimits";
 import type { GiltInstrument, GiltTerms, SimContext } from "../gilts/types";
 import { buildPricing } from "../gilts/pricing";
 import { accruedPer100, addDays, couponPer100, couponsBetween, fundsYear, remainingCoupons } from "../gilts/schedule";
@@ -360,10 +370,39 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
     nick: { income: fi.perPerson.nick.net, savings: fi.perPerson.nick.net, tax: fi.perPerson.nick.tax },
     tracy: { income: fi.perPerson.tracy.net, savings: fi.perPerson.tracy.net, tax: fi.perPerson.tracy.tax },
   });
-  let finalIncomeHandled = PERSONS.every((id) => fi.perPerson[id].net === 0 && fi.perPerson[id].tax === 0);
+  // The employer (e.g. director's) pension contribution paid with it goes straight into the
+  // pension: not taxable income, not cash. `drawnBefore` says whether the person's pension has
+  // already been drawn in the model, which caps contributions at the money purchase allowance.
+  const payEmployerPension = (drawnBefore: (id: PersonId) => boolean): void => {
+    const deltas: Deltas = {};
+    for (const id of PERSONS) {
+      const amount = fi.perPerson[id].employerPension;
+      if (!(amount > 0)) continue;
+      state.balances[id].pension += amount;
+      deltas[id] = { pension: amount };
+      const name = scenario.people[id].name;
+      if (drawnBefore(id) && amount > MONEY_PURCHASE_ANNUAL_ALLOWANCE) {
+        warnings.push(
+          `${name}'s employer pension contribution of ${gbp(amount)} on ${fi.date} comes after their pension ` +
+            `has been drawn, so the ${gbp(MONEY_PURCHASE_ANNUAL_ALLOWANCE)} money purchase annual allowance ` +
+            `applies: the excess would be taxed (not modelled).`,
+        );
+      } else if (amount > PENSION_ANNUAL_ALLOWANCE + 0.005) {
+        warnings.push(
+          `${name}'s employer pension contribution of ${gbp(amount)} on ${fi.date} exceeds the ` +
+            `${gbp(PENSION_ANNUAL_ALLOWANCE)} annual allowance: the excess would be taxed unless unused ` +
+            `allowance is carried forward (not modelled).`,
+        );
+      }
+    }
+    if (Object.keys(deltas).length) txRow(EMPLOYER_PENSION_ROW_LABEL, fi.date, deltas);
+  };
+  const hasNetOrTax = PERSONS.some((id) => fi.perPerson[id].net !== 0 || fi.perPerson[id].tax !== 0);
+  let finalIncomeHandled = !hasNetOrTax && PERSONS.every((id) => !(fi.perPerson[id].employerPension > 0));
   if (!finalIncomeHandled && fiAt < modelStart.getTime()) {
     for (const id of PERSONS) state.balances[id].savings += fi.perPerson[id].net;
-    txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
+    if (hasNetOrTax) txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
+    payEmployerPension(() => false);
     balanceRow("After Final Income", fi.date, scenario.startDate);
     finalIncomeHandled = true;
   }
@@ -714,7 +753,12 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
           oneOffIncome[id] += net + tax;
           accum.paidAtSource[id] += tax;
         }
-        txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
+        if (hasNetOrTax) txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
+        const drawn = (id: PersonId) =>
+          [...years.flatMap((ys) => ys.withdrawals), ...withdrawals].some(
+            (w) => w.person === id && w.source === "pension" && w.gross > 0,
+          );
+        payEmployerPension(drawn);
         finalIncomeHandled = true;
       }
 

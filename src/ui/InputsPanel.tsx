@@ -476,8 +476,18 @@ export function InputsPanel() {
               step={1000}
               onChange={(v) => update((sc) => (sc.finalIncome.perPerson[id].tax = v))}
             />
+            <NumField
+              label="Employer pension contribution"
+              value={s.finalIncome.perPerson[id].employerPension}
+              step={1000}
+              onChange={(v) => update((sc) => (sc.finalIncome.perPerson[id].employerPension = v))}
+            />
           </div>
         ))}
+        <p className="muted" style={{ fontSize: 12, margin: "4px 0 8px" }}>
+          An employer (e.g. director's) pension contribution is paid straight into the pension on the
+          same date. It isn't taxed as income; a warning shows if it exceeds the annual allowance.
+        </p>
       </div>
 
       {person("nick")}

@@ -78,6 +78,7 @@ export interface PersonRow {
   giaGainFraction: SqlNum;
   finalIncomeNet: SqlNum;
   finalIncomeTax: SqlNum;
+  finalIncomeEmployerPension: SqlNum;
 }
 
 /** One year's tax-parameter edits: a column per field, NULL where the user didn't edit it
@@ -178,6 +179,7 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       giaGainFraction: s.balances[pid].giaGainFraction,
       finalIncomeNet: s.finalIncome.perPerson[pid].net,
       finalIncomeTax: s.finalIncome.perPerson[pid].tax,
+      finalIncomeEmployerPension: s.finalIncome.perPerson[pid].employerPension,
     })),
     taxParams: s.taxParams.map((tp) => {
       const row = { scenarioId: s.id, year: tp.year } as TaxParamsRow;
@@ -268,8 +270,16 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
     finalIncome: {
       date: iso(sc.finalIncomeDate),
       perPerson: {
-        nick: { net: num(nick.finalIncomeNet), tax: num(nick.finalIncomeTax) },
-        tracy: { net: num(tracy.finalIncomeNet), tax: num(tracy.finalIncomeTax) },
+        nick: {
+          net: num(nick.finalIncomeNet),
+          tax: num(nick.finalIncomeTax),
+          employerPension: num(nick.finalIncomeEmployerPension),
+        },
+        tracy: {
+          net: num(tracy.finalIncomeNet),
+          tax: num(tracy.finalIncomeTax),
+          employerPension: num(tracy.finalIncomeEmployerPension),
+        },
       },
     },
     taxPolicy: {

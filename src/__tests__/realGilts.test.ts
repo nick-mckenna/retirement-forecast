@@ -152,7 +152,7 @@ describe("income drawn from real gilts when cash runs out", () => {
     const s = defaultScenario();
     for (const id of ["nick", "tracy"] as const) {
       s.balances[id] = { ...s.balances[id], isa: 0, pension: 0, gia: 0, savings: 0, gilts: 0 };
-      s.finalIncome.perPerson[id] = { net: 0, tax: 0 };
+      s.finalIncome.perPerson[id] = { net: 0, tax: 0, employerPension: 0 };
     }
     const opening: OpeningGilt[] = [
       { holder: "nick", isin: "GB00TEST0005", name: "4.25% Test Gilt 2031", couponRate: 0.0425, redemptionDate: "2031-03-07", nominal: 300_000, aisCredit: 0 },

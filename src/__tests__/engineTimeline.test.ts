@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { LedgerRow, PersonColumns } from "../engine/ledger";
+import {
+  EMPLOYER_PENSION_ROW_LABEL,
+  emptyPersonColumns,
+  INCOME_ROW_LABELS,
+  incomeByTaxYear,
+  type LedgerRow,
+  type PersonColumns,
+} from "../engine/ledger";
 import { simulate } from "../engine/simulate";
 import { defaultScenario } from "../model/defaults";
 import { migrateScenario } from "../model/migrate";
+import { annualToMonthly } from "../model/rates";
 import type { Scenario, StrategyConfig } from "../model/types";
 import { makePlan } from "../strategy/drawdown";
 import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
@@ -42,7 +50,7 @@ function giltsOnly(): Scenario {
   const s = defaultScenario();
   for (const id of ["nick", "tracy"] as const) {
     s.balances[id] = { ...s.balances[id], isa: 0, pension: 0, gia: 0, savings: 0, gilts: 0 };
-    s.finalIncome.perPerson[id] = { net: 0, tax: 0 };
+    s.finalIncome.perPerson[id] = { net: 0, tax: 0, employerPension: 0 };
   }
   s.balances.nick.gilts = 200_000;
   return s;
@@ -99,7 +107,7 @@ describe("sale plans", () => {
     s.people.nick.dob = "1971-09-01"; // 56 on 6 April 2028, 57 by the 5 April 2029 refill
     s.people.nick.pensionAccessAge = 57;
     s.balances.nick.pension = 500_000;
-    s.finalIncome.perPerson.nick = { net: 0, tax: 0 }; // leave his personal allowance free that year
+    s.finalIncome.perPerson.nick = { net: 0, tax: 0, employerPension: 0 }; // leave his personal allowance free that year
     expect(simulate(s).years[0].disposals.sales.nick.pension).toBeGreaterThan(0);
   });
 });
@@ -114,7 +122,7 @@ describe("final employment income is earnings of its tax year", () => {
     s.rates.giltCoupon = 0; // no coupon income either
     s.people.nick.pensionAccessAge = 99;
     s.balances.nick = { ...s.balances.nick, gia: 0, pension: 0, isa: 2_000_000 };
-    s.finalIncome.perPerson.nick = { net: 60_000 - 11_432, tax: 11_432 };
+    s.finalIncome.perPerson.nick = { net: 60_000 - 11_432, tax: 11_432, employerPension: 0 };
     return s;
   }
 
@@ -132,7 +140,7 @@ describe("final employment income is earnings of its tax year", () => {
     s.balances.nick = { ...s.balances.nick, isa: 0, pension: 2_000_000 };
     // Nothing for Person B to sell, so the refill has to come from A's pension.
     s.balances.tracy = { ...s.balances.tracy, isa: 0, pension: 0, gia: 0, savings: 0, gilts: 0 };
-    s.finalIncome.perPerson.tracy = { net: 0, tax: 0 };
+    s.finalIncome.perPerson.tracy = { net: 0, tax: 0, employerPension: 0 };
     const y0 = simulate(s).years[0];
     const sold = y0.disposals.sales.nick.pension;
     expect(sold).toBeGreaterThan(0);
@@ -148,6 +156,82 @@ describe("final employment income is earnings of its tax year", () => {
     const s = defaultScenario();
     s.finalIncome.date = "2099-01-01";
     expect(simulate(s).warnings.some((w) => w.includes("final income on 2099-01-01"))).toBe(true);
+  });
+});
+
+describe("employer pension contribution paid with the final income", () => {
+  /** Person A's pension stays locked, so neither run ever draws it. */
+  function withContribution(amount: number): Scenario {
+    const s = defaultScenario();
+    s.people.nick.pensionAccessAge = 99;
+    s.finalIncome.perPerson.nick.employerPension = amount;
+    return s;
+  }
+  const yearEnd = (r: ReturnType<typeof simulate>) => r.rows.find((x) => x.label === "Year End")!;
+
+  it("goes straight into the pension on its date: not income, not cash, not taxed", () => {
+    const base = simulate(withContribution(0));
+    const r = simulate(withContribution(40_000));
+    const row = r.rows.find((x) => x.label === EMPLOYER_PENSION_ROW_LABEL)!;
+    expect(row.dateIso).toBe("2028-04-06");
+    expect(row.nick).toEqual({ ...emptyPersonColumns(), pension: 40_000 });
+    expect(row.tracy).toEqual(emptyPersonColumns());
+    // Paid after the month's growth, it grows for the other eleven months of the year.
+    const m = annualToMonthly(defaultScenario().rates.investmentGrowth);
+    expect(yearEnd(r).nick.pension - yearEnd(base).nick.pension).toBeCloseTo(40_000 * (1 + m) ** 11, 2);
+    expect(yearEnd(r).nick.savings).toBeCloseTo(yearEnd(base).nick.savings, 6);
+    expect(r.years[0].tax.nick).toEqual(base.years[0].tax.nick);
+    expect(incomeByTaxYear(r.rows, [2028])[0].bySource.nick).toEqual(incomeByTaxYear(base.rows, [2028])[0].bySource.nick);
+    expect(r.warnings).toEqual(base.warnings);
+    expectLedgerReconciles(r.rows);
+  });
+
+  it("is paid even when there is no final income that year", () => {
+    const s = withContribution(30_000);
+    s.finalIncome.perPerson.nick = { net: 0, tax: 0, employerPension: 30_000 };
+    s.finalIncome.perPerson.tracy = { net: 0, tax: 0, employerPension: 0 };
+    const r = simulate(s);
+    expect(r.rows.some((x) => x.label === INCOME_ROW_LABELS.finalIncome)).toBe(false);
+    expect(r.rows.find((x) => x.label === EMPLOYER_PENSION_ROW_LABEL)?.nick.pension).toBe(30_000);
+  });
+
+  it("lands before the first month when paid before the model starts", () => {
+    const s = withContribution(25_000);
+    s.finalIncome.date = "2028-03-31"; // before the 5 April 2028 starting balances
+    const r = simulate(s);
+    const start = r.rows.find((x) => x.label === "Starting Balances")!;
+    const after = r.rows.find((x) => x.label === "After Final Income")!;
+    expect(after.nick.pension - start.nick.pension).toBe(25_000);
+    expectLedgerReconciles(r.rows);
+  });
+
+  it("warns above the annual allowance, but not at it", () => {
+    const at = simulate(withContribution(60_000)).warnings;
+    expect(at.some((w) => w.includes("annual allowance"))).toBe(false);
+    const over = simulate(withContribution(75_000)).warnings;
+    expect(over.some((w) => w.includes("£75,000") && w.includes("£60,000 annual allowance"))).toBe(true);
+  });
+
+  it("warns about the money purchase annual allowance once the pension has been drawn", () => {
+    const s = defaultScenario();
+    s.finalIncome.date = "2030-04-06";
+    s.finalIncome.perPerson.tracy.employerPension = 20_000;
+    const r = simulate(s);
+    // Person B's pension is drawn at the earlier year ends (she can access it from the start).
+    const drawnEarlier = r.years
+      .filter((y) => y.taxYearStart < 2030)
+      .some((y) => y.withdrawals.some((w) => w.person === "tracy" && w.source === "pension"));
+    expect(drawnEarlier).toBe(true);
+    expect(r.warnings.some((w) => w.includes("£10,000 money purchase annual allowance"))).toBe(true);
+  });
+
+  it("is backfilled as zero for scenarios saved before it existed", () => {
+    const s = defaultScenario() as unknown as Record<string, any>;
+    delete s.finalIncome.perPerson.nick.employerPension;
+    delete s.finalIncome.perPerson.tracy.employerPension;
+    const m = migrateScenario(s as any);
+    expect(m.finalIncome.perPerson.nick).toEqual({ net: 78_000, tax: 22_000, employerPension: 0 });
+    expect(m.finalIncome.perPerson.tracy.employerPension).toBe(0);
   });
 });
 
@@ -244,7 +328,7 @@ describe("proactive crystallisation", () => {
     s.rates.savingsInterest = 0;
     s.rates.giaDividendYield = 0;
     s.rates.giltCoupon = 0;
-    s.finalIncome.perPerson.tracy = { net: 0, tax: 0 };
+    s.finalIncome.perPerson.tracy = { net: 0, tax: 0, employerPension: 0 };
     const pa = (y: number) => y; // the allowance is frozen at £12,570 through 2030/31
     const r = simulate(s);
     // Person B can access her pension from the start and has no State Pension until 2037.

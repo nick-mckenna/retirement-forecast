@@ -48,6 +48,10 @@ export const INCOME_ROW_LABELS = {
 export type IncomeSource = keyof typeof INCOME_ROW_LABELS;
 export const INCOME_SOURCES: IncomeSource[] = ["drawdown", "statePension", "finalIncome"];
 
+/** The employer (e.g. director's) pension contribution paid with the final income: a pension
+ *  inflow, not income — it carries no income column, so the income chart never counts it. */
+export const EMPLOYER_PENSION_ROW_LABEL = "Employer pension contribution";
+
 /** One tax year's income per person, plus the household total. */
 export interface AnnualIncome {
   taxYearStart: number;
