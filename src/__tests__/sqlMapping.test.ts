@@ -20,6 +20,9 @@ function fullScenario(): Scenario {
   s.people.tracy.lumpSumAllowanceUsed = 40_000;
   s.balances.nick.premiumBonds = 12_345;
   s.rates.premiumBondRate = 0.041;
+  s.rates.giltYieldShift = -0.0025;
+  s.strategy.giltUniverse = "fictional";
+  s.strategy.giltSelection = "lowestCoupon";
   s.taxPolicy = { freezeUntilYear: 2035, indexation: "custom", uprating: 0.02 }; // non-default, so the columns are exercised
   s.taxParams = [
     { year: 2029, personalAllowance: 14000, savingsBasicRate: 0.22 }, // sparse: only the edited fields

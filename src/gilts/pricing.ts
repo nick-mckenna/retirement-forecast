@@ -27,32 +27,77 @@ function monthIndex(iso: string): number {
   return Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7)) - 1;
 }
 
-/** Dirty price per £100 nominal at gross redemption yield `y`, settling on `settleIso`. */
-export function dirtyFromYield(terms: GiltTerms, settleIso: string, y: number, entitled = true): number {
+/** Where settlement falls in the coupon schedule: the fraction of a period to the next coupon
+ *  and how many cash flows remain (null once redeemed). Computed once per price/yield solve. */
+interface FlowShape {
+  frac: number;
+  n: number;
+}
+
+function flowShape(terms: GiltTerms, settleIso: string): FlowShape | null {
   const next = nextCoupon(terms, settleIso);
-  if (next === null) return 100;
+  if (next === null) return null;
   const prev = prevCoupon(terms, settleIso);
-  const frac = daysBetween(settleIso, next) / daysBetween(prev, next);
-  // Cash flows on the next coupon date and every six months to redemption (inclusive).
-  const n = Math.round((monthIndex(terms.redemptionDate) - monthIndex(next)) / 6) + 1;
-  const c = couponPer100(terms);
+  return {
+    frac: daysBetween(settleIso, next) / daysBetween(prev, next),
+    // Cash flows on the next coupon date and every six months to redemption (inclusive).
+    n: Math.round((monthIndex(terms.redemptionDate) - monthIndex(next)) / 6) + 1,
+  };
+}
+
+/** Present value per £100 nominal at yield `y` of the remaining cash flows: `first` on the next
+ *  coupon date, `each` on every later one, and 100 at redemption. */
+function presentValue(shape: FlowShape | null, y: number, first: number, each: number): number {
+  if (shape === null) return 100;
+  const { frac, n } = shape;
   const v = 1 / (1 + y / 2);
-  const first = entitled ? c : 0;
-  // Σ_{i=1}^{n-1} c·v^i, in closed form (v = 1 at a zero yield).
-  const later = n <= 1 ? 0 : Math.abs(1 - v) < 1e-12 ? c * (n - 1) : (c * v * (1 - Math.pow(v, n - 1))) / (1 - v);
+  // Σ_{i=1}^{n-1} each·v^i, in closed form (v = 1 at a zero yield).
+  const later = n <= 1 ? 0 : Math.abs(1 - v) < 1e-12 ? each * (n - 1) : (each * v * (1 - Math.pow(v, n - 1))) / (1 - v);
   return Math.pow(v, frac) * (first + later + 100 * Math.pow(v, n - 1));
 }
 
-/** Gross redemption yield from a dirty price (bisection on the monotone price–yield curve). */
-export function yieldFromDirty(terms: GiltTerms, settleIso: string, dirty: number, entitled = true): number {
+function solveYield(pv: (y: number) => number, price: number): number {
   let lo = -0.5;
   let hi = 2;
   for (let i = 0; i < 100; i++) {
     const mid = (lo + hi) / 2;
-    if (dirtyFromYield(terms, settleIso, mid, entitled) > dirty) lo = mid;
+    if (pv(mid) > price) lo = mid;
     else hi = mid;
   }
   return (lo + hi) / 2;
+}
+
+/** Dirty price per £100 nominal at gross redemption yield `y`, settling on `settleIso`. */
+export function dirtyFromYield(terms: GiltTerms, settleIso: string, y: number, entitled = true): number {
+  const c = couponPer100(terms);
+  return presentValue(flowShape(terms, settleIso), y, entitled ? c : 0, c);
+}
+
+/**
+ * The yield after tax of buying at `dirty` on `settleIso`: coupons net of income tax at
+ * `taxRate` — the first one taxed only above the accrued interest bought with it (Accrued
+ * Income Scheme) — and the redemption, whose gain over the price is CGT-free. Semi-annual, like
+ * the gross redemption yield, so the two compare directly.
+ */
+export function netYield(
+  terms: GiltTerms,
+  settleIso: string,
+  dirty: number,
+  taxRate: number,
+  accruedPaid = accruedPer100(terms, settleIso),
+): number {
+  const c = couponPer100(terms);
+  const first = c - taxRate * Math.max(0, c - Math.max(0, accruedPaid));
+  const each = c * (1 - taxRate);
+  const shape = flowShape(terms, settleIso);
+  return solveYield((y) => presentValue(shape, y, first, each), dirty);
+}
+
+/** Gross redemption yield from a dirty price (bisection on the monotone price–yield curve). */
+export function yieldFromDirty(terms: GiltTerms, settleIso: string, dirty: number, entitled = true): number {
+  const c = couponPer100(terms);
+  const shape = flowShape(terms, settleIso);
+  return solveYield((y) => presentValue(shape, y, entitled ? c : 0, c), dirty);
 }
 
 /** Gross redemption yield of a clean price on `iso` (cum-dividend). */
@@ -246,12 +291,21 @@ function build(market: GiltMarket, shift: number): GiltPricing {
     return price;
   };
 
+  const dirtyCache = new Map<string, number>();
   return {
     hasMarket: true,
     asOf,
     knows: (isin) => history.has(isin),
     clean,
-    dirty: (isin, terms, iso, side) => clean(isin, terms, iso, side) + accruedPer100(terms, iso),
+    dirty: (isin, terms, iso, side) => {
+      const key = `${isin}|${side}|${iso}`;
+      let d = dirtyCache.get(key);
+      if (d === undefined) {
+        d = clean(isin, terms, iso, side) + accruedPer100(terms, iso);
+        dirtyCache.set(key, d);
+      }
+      return d;
+    },
     observed,
     curveYield,
     yieldOf: (isin, side) => yields.get(isin)?.[side] ?? null,

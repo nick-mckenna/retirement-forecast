@@ -32,6 +32,8 @@ export interface ScenarioRow {
   premiumBondRate: SqlNum | null;
   inflation: SqlNum;
   giltCoupon: SqlNum;
+  /** Added later: absent (undefined) on rows read before the column existed. */
+  giltYieldShift: SqlNum | null;
   giaDividendYield: SqlNum;
   incomeMode: string;
   incomeBaseAnnual: SqlNum;
@@ -44,6 +46,8 @@ export interface ScenarioRow {
   fillPersonalAllowanceFromPension: SqlBool;
   preserveIsa: SqlBool;
   giltLadderYears: SqlNum;
+  giltUniverse: string | null;
+  giltSelection: string | null;
   taxMode: string;
   lifetimeFillFraction: SqlNum | null;
   taxFreezeUntilYear: SqlNum;
@@ -130,6 +134,7 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       premiumBondRate: s.rates.premiumBondRate,
       inflation: s.rates.inflation,
       giltCoupon: s.rates.giltCoupon,
+      giltYieldShift: s.rates.giltYieldShift,
       giaDividendYield: s.rates.giaDividendYield,
       incomeMode: s.income.mode,
       incomeBaseAnnual: s.income.baseAnnual,
@@ -142,6 +147,8 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       fillPersonalAllowanceFromPension: s.strategy.fillPersonalAllowanceFromPension,
       preserveIsa: s.strategy.preserveIsa,
       giltLadderYears: s.strategy.giltLadderYears,
+      giltUniverse: s.strategy.giltUniverse,
+      giltSelection: s.strategy.giltSelection,
       taxMode: s.strategy.taxMode,
       lifetimeFillFraction: s.strategy.lifetimeFillFraction ?? null,
       taxFreezeUntilYear: s.taxPolicy.freezeUntilYear,
@@ -235,6 +242,7 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
       premiumBondRate: num(sc.premiumBondRate ?? sc.savingsInterest),
       inflation: num(sc.inflation),
       giltCoupon: num(sc.giltCoupon),
+      giltYieldShift: sc.giltYieldShift == null ? 0 : num(sc.giltYieldShift),
       giaDividendYield: num(sc.giaDividendYield),
       statePensionGrowth: sc.statePensionGrowth == null ? null : num(sc.statePensionGrowth),
     },
@@ -252,6 +260,9 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
       fillPersonalAllowanceFromPension: bool(sc.fillPersonalAllowanceFromPension),
       preserveIsa: bool(sc.preserveIsa),
       giltLadderYears: num(sc.giltLadderYears),
+      giltUniverse: sc.giltUniverse === "fictional" ? "fictional" : "real",
+      giltSelection:
+        sc.giltSelection === "lowestCoupon" || sc.giltSelection === "grossYield" ? sc.giltSelection : "netYield",
       taxMode: sc.taxMode as Scenario["strategy"]["taxMode"],
     },
     finalIncome: {

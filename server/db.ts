@@ -347,6 +347,17 @@ const SCHEMA: string[] = [
      CONSTRAINT DF_ScenarioPerson_premiumBonds DEFAULT 0`,
   `IF COL_LENGTH(N'dbo.Scenario', N'premiumBondRate') IS NULL
    ALTER TABLE dbo.Scenario ADD premiumBondRate FLOAT NULL`,
+  // Real gilts in the ladder: the yield shift and what to buy / how to choose.
+  `IF COL_LENGTH(N'dbo.Scenario', N'giltYieldShift') IS NULL
+   ALTER TABLE dbo.Scenario ADD giltYieldShift FLOAT NOT NULL CONSTRAINT DF_Scenario_giltYieldShift DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'giltUniverse') IS NULL
+   ALTER TABLE dbo.Scenario ADD giltUniverse NVARCHAR(10) NOT NULL
+     CONSTRAINT DF_Scenario_giltUniverse DEFAULT N'real'
+     CONSTRAINT CK_Scenario_giltUniverse CHECK (giltUniverse IN (N'real', N'fictional'))`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'giltSelection') IS NULL
+   ALTER TABLE dbo.Scenario ADD giltSelection NVARCHAR(14) NOT NULL
+     CONSTRAINT DF_Scenario_giltSelection DEFAULT N'netYield'
+     CONSTRAINT CK_Scenario_giltSelection CHECK (giltSelection IN (N'netYield', N'lowestCoupon', N'grossYield'))`,
   `IF COL_LENGTH(N'dbo.ScenarioPerson', N'lumpSumAllowanceUsed') IS NULL
    ALTER TABLE dbo.ScenarioPerson ADD lumpSumAllowanceUsed FLOAT NOT NULL
      CONSTRAINT DF_ScenarioPerson_lumpSumAllowanceUsed DEFAULT 0`,

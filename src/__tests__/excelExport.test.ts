@@ -3,6 +3,7 @@ import ExcelJS from "exceljs";
 import { simulate } from "../engine/simulate";
 import { defaultScenario } from "../model/defaults";
 import { buildWorkbook } from "../export/excelExport";
+import { syntheticMarket } from "./helpers/giltMarket";
 
 describe("excel export", () => {
   it("builds the three original sheets plus a tax summary, and round-trips", async () => {
@@ -37,5 +38,21 @@ describe("excel export", () => {
     expect(tx.getCell("H2").value).toBeCloseTo(1000000, 0); // Person A Pension
     // Net Worth column uses a live SUM formula on balance rows.
     expect((tx.getCell("S2").value as any).formula).toContain("SUM(F2:O2)");
+  });
+
+  it("lists the gilts, real ones with their ISIN, price and yields", async () => {
+    const scenario = defaultScenario();
+    const result = simulate(scenario, { giltMarket: syntheticMarket() });
+    const wb2 = new ExcelJS.Workbook();
+    await wb2.xlsx.load((await buildWorkbook(scenario, result).xlsx.writeBuffer()) as ArrayBuffer);
+    const ws = wb2.getWorksheet("Gilts")!;
+    expect(ws.rowCount).toBe(result.gilts.length + 1);
+    const real = result.gilts.filter((g) => g.isin);
+    expect(real.length).toBeGreaterThan(0);
+    const isins = new Set<string>();
+    ws.eachRow((row, i) => {
+      if (i > 1 && row.getCell(4).value) isins.add(String(row.getCell(4).value));
+    });
+    expect(isins.has(real[0].isin!)).toBe(true);
   });
 });

@@ -123,7 +123,7 @@ export function RetirementApp() {
         {tab === "purchases" && <PurchasesView scenario={scenario} />}
         {tab === "tax" && <TaxView result={result} scenario={scenario} />}
         {tab === "disposals" && <DisposalsView result={result} scenario={scenario} />}
-        {tab === "gilts" && <GiltsView result={result} scenario={scenario} />}
+        {tab === "gilts" && <GiltsView result={result} scenario={scenario} market={giltMarket} />}
         {tab === "income" && <IncomeTargetsView scenario={scenario} />}
         {tab === "taxparams" && <TaxParamsEditor scenario={scenario} />}
       </main>

@@ -58,6 +58,7 @@ export function migrateScenario(s: Scenario): Scenario {
       ...s.rates,
       statePensionGrowth: s.rates.statePensionGrowth ?? null,
       premiumBondRate: s.rates.premiumBondRate ?? s.rates.savingsInterest,
+      giltYieldShift: s.rates.giltYieldShift ?? 0,
     },
     married: s.married ?? false,
     income: {
@@ -67,7 +68,12 @@ export function migrateScenario(s: Scenario): Scenario {
       // Derived, not an independent input: the tax year the model's first day falls in.
       startYear: firstModelledTaxYear(startDate),
     },
-    strategy: { ...s.strategy, taxMode: s.strategy.taxMode ?? "heuristic" },
+    strategy: {
+      ...s.strategy,
+      taxMode: s.strategy.taxMode ?? "heuristic",
+      giltUniverse: s.strategy.giltUniverse ?? "real",
+      giltSelection: s.strategy.giltSelection ?? "netYield",
+    },
     taxPolicy,
     taxParams,
     overrides: migrateOverrideKeys(s.overrides ?? []),

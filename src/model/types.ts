@@ -49,8 +49,12 @@ export interface Rates {
   premiumBondRate: number;
   /** Annual inflation used to grow income targets & (optionally) tax thresholds, e.g. 0.03. */
   inflation: number;
-  /** Assumed coupon rate on newly purchased gilts (taxable savings income). */
+  /** Coupon of the engine's own (fictional) gilts — used when the ladder buys fictional gilts
+   *  (`strategy.giltUniverse` "fictional", or no DMO prices yet). Taxable savings income. */
   giltCoupon: number;
+  /** Real gilts: a parallel shift added to every modelled future gilt yield (0.005 = prices as
+   *  if yields were half a point higher than today's curve). */
+  giltYieldShift: number;
   /** Assumed dividend yield within the GIA (taxable as dividends). 0 to ignore. */
   giaDividendYield: number;
   /** Annual State Pension uprating; null = the triple lock floor, max(inflation, 2.5%). */
@@ -133,6 +137,17 @@ export interface TaxYearParams {
   isaAllowance: number;
 }
 
+export type GiltUniverse = "real" | "fictional";
+
+/**
+ * - "netYield": the best yield after tax on the coupons at the holder's marginal savings rate —
+ *   low-coupon gilts when coupons would be taxed (their pull to par is CGT-free), the best
+ *   gross yield when they fall within the allowances;
+ * - "lowestCoupon": always the lowest coupon (least taxable income);
+ * - "grossYield": the best yield before tax.
+ */
+export type GiltSelection = "netYield" | "lowestCoupon" | "grossYield";
+
 export interface StrategyConfig {
   /** Years of income to hold as the cash + gilts buffer (the "Savings & Gilts" column). */
   bufferYears: number;
@@ -149,6 +164,11 @@ export interface StrategyConfig {
   preserveIsa: boolean;
   /** Target maturity ladder length in years for newly bought gilts. */
   giltLadderYears: number;
+  /** What the ladder buys: real gilts from the DMO list (with fictional ones only where no real
+   *  gilt redeems in time for a rung), or the engine's fictional par gilts. */
+  giltUniverse: GiltUniverse;
+  /** How the ladder chooses between real gilts for a rung. */
+  giltSelection: GiltSelection;
   /**
    * How to choose which investments to sell when raising the annual cash:
    * - "heuristic": fixed tax-aware priority order (uses preserveIsa / fillPersonalAllowanceFromPension).

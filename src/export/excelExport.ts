@@ -19,6 +19,7 @@ export function buildWorkbook(scenario: Scenario, result: SimResult): ExcelJS.Wo
   buildTransactions(wb, scenario, result);
   buildTaxSummary(wb, scenario, result);
   buildDisposals(wb, scenario, result);
+  buildGilts(wb, scenario, result);
   return wb;
 }
 
@@ -183,6 +184,60 @@ function buildDisposals(wb: ExcelJS.Workbook, scenario: Scenario, result: SimRes
     for (let c = 2; c <= 11; c++) r.getCell(c).numFmt = GBP;
   }
   ws.columns.forEach((c) => (c.width = 14));
+}
+
+/** Every gilt held at the start or bought by the ladder: real ones with their ISIN, price paid
+ *  and yields when bought. */
+function buildGilts(wb: ExcelJS.Workbook, scenario: Scenario, result: SimResult): void {
+  const ws = wb.addWorksheet("Gilts");
+  ws.addRow([
+    "Purchase Date",
+    "Holder",
+    "Gilt",
+    "ISIN",
+    "Nominal",
+    "Coupon",
+    "Clean Price",
+    "Cost",
+    "Yield",
+    "Yield After Tax",
+    "Tax Rate",
+    "Maturity Date",
+    "Source",
+  ]);
+  ws.getRow(1).font = { bold: true };
+  const gilts = [...result.gilts].sort(
+    (a, b) => a.purchaseDateIso.localeCompare(b.purchaseDateIso) || a.maturityDateIso.localeCompare(b.maturityDateIso),
+  );
+  for (const g of gilts) {
+    const r = ws.addRow([
+      parseDate(g.purchaseDateIso),
+      scenario.people[g.holder].name,
+      g.name,
+      g.isin ?? "",
+      g.nominal,
+      g.couponRate,
+      g.cleanPrice ?? null,
+      g.cost ?? null,
+      g.grossYield ?? null,
+      g.netYield ?? null,
+      g.taxRate ?? null,
+      parseDate(g.maturityDateIso),
+      g.initial ? "held at start" : "ladder purchase",
+    ]);
+    r.getCell(1).numFmt = DATE;
+    r.getCell(5).numFmt = GBP;
+    r.getCell(6).numFmt = PCT;
+    r.getCell(7).numFmt = "0.00";
+    r.getCell(8).numFmt = GBP;
+    r.getCell(9).numFmt = PCT;
+    r.getCell(10).numFmt = PCT;
+    r.getCell(11).numFmt = "0%";
+    r.getCell(12).numFmt = DATE;
+  }
+  ws.columns.forEach((c) => (c.width = 14));
+  ws.getColumn(3).width = 30;
+  ws.views = [{ state: "frozen", ySplit: 1 }];
 }
 
 function buildTaxSummary(wb: ExcelJS.Workbook, scenario: Scenario, result: SimResult): void {

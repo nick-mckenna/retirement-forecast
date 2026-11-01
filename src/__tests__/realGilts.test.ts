@@ -52,9 +52,10 @@ function scenarioFor(mode: StrategyConfig["taxMode"]): Scenario {
 }
 
 describe("without real gilts the engine is unchanged", () => {
-  it("gives the same result with or without a market", () => {
+  it("gives the same result with or without a market when buying fictional gilts", () => {
     const s = defaultScenario();
-    expect(simulate(s, { giltMarket: market })).toEqual(simulate(s));
+    const fictional = { ...s, strategy: { ...s.strategy, giltUniverse: "fictional" as const } };
+    expect(simulate(fictional, { giltMarket: market })).toEqual(simulate(s));
     expect(simulate(s, {})).toEqual(simulate(s));
   });
 
@@ -84,7 +85,8 @@ describe.each(MODES)("real opening gilts (%s)", (mode) => {
 });
 
 describe("real gilt cash flows", () => {
-  const s = defaultScenario();
+  // The ladder buys the engine's own gilts here, so only the opening real gilts are real.
+  const s = { ...defaultScenario(), strategy: { ...defaultScenario().strategy, giltUniverse: "fictional" as const } };
   const r = simulate(s, ctx());
   const row = (label: string, date: string) => r.rows.find((x) => x.label === label && x.dateIso === date);
 
@@ -126,7 +128,7 @@ describe("real gilt cash flows", () => {
 });
 
 describe("the buffer counts real gilts by when they mature", () => {
-  it("at nominal inside the buffer window, at market value beyond it", () => {
+  it("as the cash it will deliver inside the buffer window, at market value beyond it", () => {
     const s = defaultScenario();
     s.strategy.autoStrategy = false;
     const r = simulate(s, ctx());
@@ -135,9 +137,10 @@ describe("the buffer counts real gilts by when they mature", () => {
     const pricing = buildPricing(market);
     const mv = (g: OpeningGilt) => (g.nominal * pricing.dirty(g.isin, g, end, "sell")) / 100;
     const cash = yearEnd.nick.savings + yearEnd.tracy.savings;
-    // The window after 2028/29 is 2029–2031. The 4% 2029 funds 2030: nominal. The ¼% 2031 funds
-    // 2032 and the 2056 gilt far later: market value. The engine's own 15,000 of rungs: par.
-    expect(r.years[0].bufferEnd).toBeCloseTo(cash + 15_000 + 20_000 + mv(OPENING[1]) + mv(OPENING[2]), 4);
+    // The window after 2028/29 is 2029–2031. The 4% 2029 funds 2030: its nominal plus its last
+    // coupon (7 June 2029). The ¼% 2031 funds 2032 and the 2056 gilt far later: market value.
+    // The engine's own 15,000 of rungs: par.
+    expect(r.years[0].bufferEnd).toBeCloseTo(cash + 15_000 + 20_400 + mv(OPENING[1]) + mv(OPENING[2]), 4);
     // The ledger's gilts column holds every real gilt at market value.
     expect(yearEnd.nick.giltsTotal).toBeCloseTo(15_000 + mv(OPENING[0]) + mv(OPENING[1]), 4);
     expect(yearEnd.tracy.giltsTotal).toBeCloseTo(mv(OPENING[2]), 4);

@@ -274,7 +274,16 @@ export function InputsPanel() {
           onChange={(v) => update((sc) => (sc.rates.premiumBondRate = v))}
         />
         <PctField label="Inflation" value={s.rates.inflation} onChange={(v) => update((sc) => (sc.rates.inflation = v))} />
-        <PctField label="Gilt coupon" value={s.rates.giltCoupon} onChange={(v) => update((sc) => (sc.rates.giltCoupon = v))} />
+        <PctField
+          label={s.strategy.giltUniverse === "real" ? "Gilt coupon (fictional gilts, no DMO prices)" : "Gilt coupon"}
+          value={s.rates.giltCoupon}
+          onChange={(v) => update((sc) => (sc.rates.giltCoupon = v))}
+        />
+        <PctField
+          label="Gilt yield shift (real gilts)"
+          value={s.rates.giltYieldShift}
+          onChange={(v) => update((sc) => (sc.rates.giltYieldShift = v))}
+        />
         <PctField label="GIA dividend yield" value={s.rates.giaDividendYield} onChange={(v) => update((sc) => (sc.rates.giaDividendYield = v))} />
         <OptionalNumField
           label="State pension growth"
@@ -331,6 +340,38 @@ export function InputsPanel() {
         <h2>Strategy</h2>
         <NumField label="Buffer (years)" value={s.strategy.bufferYears} step={0.5} onChange={(v) => update((sc) => (sc.strategy.bufferYears = v))} />
         <NumField label="Gilt ladder (years)" value={s.strategy.giltLadderYears} onChange={(v) => update((sc) => (sc.strategy.giltLadderYears = v))} />
+        <div className="field-full">
+          <label>Gilts to buy</label>
+          <select
+            value={s.strategy.giltUniverse}
+            onChange={(e) => update((sc) => (sc.strategy.giltUniverse = e.target.value as typeof sc.strategy.giltUniverse))}
+          >
+            <option value="real">Real gilts (DMO prices)</option>
+            <option value="fictional">Fictional par gilts</option>
+          </select>
+        </div>
+        {s.strategy.giltUniverse === "real" && (
+          <div className="field-full">
+            <label>Choose gilts by</label>
+            <select
+              value={s.strategy.giltSelection}
+              onChange={(e) => update((sc) => (sc.strategy.giltSelection = e.target.value as typeof sc.strategy.giltSelection))}
+            >
+              <option value="netYield">Best yield after tax</option>
+              <option value="lowestCoupon">Lowest coupon</option>
+              <option value="grossYield">Best gross yield</option>
+            </select>
+          </div>
+        )}
+        <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
+          {s.strategy.giltUniverse === "real"
+            ? s.strategy.giltSelection === "netYield"
+              ? "Each rung is a real gilt redeeming in time for its year, chosen per person by yield after tax at their marginal rate on savings — low-coupon gilts when coupons would be taxed (their rise to par is CGT-free), the best gross yield within the allowances. Prices are modelled from today's DMO prices (plus the yield shift); a year no real gilt fits gets a fictional gilt at par."
+              : s.strategy.giltSelection === "lowestCoupon"
+                ? "Each rung is the lowest-coupon real gilt redeeming in time for its year (least taxable income). Prices are modelled from today's DMO prices (plus the yield shift); a year no real gilt fits gets a fictional gilt at par."
+                : "Each rung is the real gilt with the best gross redemption yield redeeming in time for its year. Prices are modelled from today's DMO prices (plus the yield shift); a year no real gilt fits gets a fictional gilt at par."
+            : "Each rung is a fictional gilt bought at par, paying the scenario's gilt coupon."}
+        </p>
         <div className="field">
           <label>Auto strategy</label>
           <input type="checkbox" checked={s.strategy.autoStrategy} onChange={(e) => update((sc) => (sc.strategy.autoStrategy = e.target.checked))} />

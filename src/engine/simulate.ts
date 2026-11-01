@@ -21,7 +21,7 @@ import {
   type SellSource,
   type Withdrawal,
 } from "../strategy/drawdown";
-import { planGiltPurchases } from "../strategy/giltLadder";
+import { planGiltPurchases, type RealGiltMarket } from "../strategy/giltLadder";
 import { emptyPersonColumns, INCOME_ROW_LABELS, type LedgerRow, type PersonColumns } from "./ledger";
 import {
   giaGainFraction,
@@ -36,9 +36,9 @@ import {
   type SimState,
 } from "./state";
 import { PREMIUM_BOND_LIMIT } from "../tax/allowanceLimits";
-import type { GiltTerms, SimContext } from "../gilts/types";
+import type { GiltInstrument, GiltTerms, SimContext } from "../gilts/types";
 import { buildPricing } from "../gilts/pricing";
-import { accruedPer100, addDays, couponPer100, couponsBetween } from "../gilts/schedule";
+import { accruedPer100, addDays, couponPer100, couponsBetween, fundsYear, remainingCoupons } from "../gilts/schedule";
 
 const PERSONS: PersonId[] = ["nick", "tracy"];
 
@@ -113,6 +113,13 @@ export interface GiltRecord {
   initial: boolean;
   /** Real gilts only: ISIN. */
   isin?: string;
+  /** Real gilts bought by the ladder: clean price paid per £100, the cash it cost, its gross
+   *  redemption yield and its yield after tax at the holder's marginal rate (`taxRate`). */
+  cleanPrice?: number;
+  cost?: number;
+  grossYield?: number;
+  netYield?: number;
+  taxRate?: number;
 }
 
 export interface SimResult {
@@ -186,7 +193,25 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
     initial: true,
     ...(isRealGilt(g) ? { isin: g.isin } : {}),
   }));
-  const pricing = buildPricing(ctx.giltMarket ?? null);
+  const pricing = buildPricing(ctx.giltMarket ?? null, scenario.rates.giltYieldShift ?? 0);
+  // What the ladder buys: real gilts when asked for and prices are known; otherwise (or for a
+  // rung no real gilt redeems in time for) fictional ones.
+  const buyRealGilts = (scenario.strategy.giltUniverse ?? "real") === "real" && pricing.hasMarket;
+  const buyable = new Map<number, GiltInstrument[]>();
+  if (buyRealGilts) {
+    for (const inst of ctx.giltMarket!.instruments) {
+      if (inst.indexLinked || inst.rump || !pricing.knows(inst.isin)) continue;
+      const list = buyable.get(fundsYear(inst.redemptionDate)) ?? [];
+      list.push(inst);
+      buyable.set(fundsYear(inst.redemptionDate), list);
+    }
+    for (const list of buyable.values()) list.sort((a, b) => a.redemptionDate.localeCompare(b.redemptionDate) || a.isin.localeCompare(b.isin));
+  } else if ((scenario.strategy.giltUniverse ?? "real") === "real" && "giltMarket" in ctx) {
+    warnings.push(
+      "No DMO gilt prices yet, so the gilt ladder buys fictional par gilts at the scenario's gilt coupon — " +
+        "refresh the gilt market to buy real gilts.",
+    );
+  }
   /** A holding's market value at the end of `iso`: a real gilt at the sale price plus accrued
    *  interest, the engine's own gilts at par. */
   const holdingValue = (g: GiltHolding, iso: string): number =>
@@ -350,6 +375,9 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
     const yearStart = new Date(Date.UTC(y, 3, 6)); // 6 April y
     const yearEnd = new Date(Date.UTC(y + 1, 3, 5)); // 5 April y+1
     const accum = newAccum();
+    /** One-off earnings this year (the final salary): left out when judging the tax rate future
+     *  gilt coupons will pay, since they won't recur. */
+    const oneOffIncome: Record<PersonId, number> = { nick: 0, tracy: 0 };
     const withdrawals: Withdrawal[] = [];
     const disposals = newDisposals();
 
@@ -442,6 +470,20 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
       }
       return out;
     };
+    /** A person's marginal income-tax rate on savings income — what the next £1,000 of coupons
+     *  would cost them — in this year's position less its one-off earnings (the coupons fall in
+     *  later years), for ranking gilts by their yield after tax. */
+    const marginalSavingsRate = (id: PersonId): number => {
+      const base = {
+        nonSavings: Math.max(0, accum.taxableNonSavings[id] - oneOffIncome[id]) + accum.statePension[id],
+        savings: accum.savingsIncome[id],
+        dividends: accum.dividends[id],
+        gain: 0,
+      };
+      const step = 1000;
+      return (personYearTax({ ...base, savings: base.savings + step }, p).total - personYearTax(base, p).total) / step;
+    };
+
     /** Cash the year's tax still takes at year end (after PAYE already paid at source). */
     const taxDue = (extra?: Withdrawal[]): number => {
       const t = assessTax(extra);
@@ -669,6 +711,7 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
           const { net, tax } = fi.perPerson[id];
           state.balances[id].savings += net;
           accum.taxableNonSavings[id] += net + tax;
+          oneOffIncome[id] += net + tax;
           accum.paidAtSource[id] += tax;
         }
         txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
@@ -723,12 +766,19 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
       balanceRow("Balance", toIso(monthDate), addDays(toIso(new Date(nextMonth)), -1));
     }
 
-    // At year end the buffer counts a real gilt maturing within its window at its redemption
-    // value (what it will pay) and one maturing beyond it at market value (what it would sell
-    // for); the engine's own gilts always at par.
+    // At year end the buffer counts a real gilt funding a year within its window as the cash it
+    // will deliver — the nominal plus its remaining coupons — and one beyond it at market value
+    // (what it would sell for); the engine's own gilts at par. (Counted at nominal alone, a gilt
+    // bought with accrued interest would shrink the buffer, though that interest comes back
+    // with its next coupon.)
     const bufferWindowEnd = y + Math.ceil(scenario.strategy.bufferYears);
-    const bufferValue = (g: GiltHolding): number =>
-      isRealGilt(g) && g.maturityYear > bufferWindowEnd ? holdingValue(g, toIso(yearEnd)) : g.nominal;
+    const yearEndIso = toIso(yearEnd);
+    const bufferValue = (g: GiltHolding): number => {
+      if (!isRealGilt(g)) return g.nominal;
+      if (g.maturityYear > bufferWindowEnd) return holdingValue(g, yearEndIso);
+      const terms = termsOf(g);
+      return g.nominal * (1 + (couponPer100(terms) * remainingCoupons(terms, yearEndIso).length) / 100);
+    };
 
     // --- Year-end (5 April y+1): crystallise, refill buffer, buy gilts, compute tax ---
     if (scenario.strategy.autoStrategy) {
@@ -804,15 +854,74 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
       // below, so it is reserved per person — that also stops the ladder buying a person's
       // rung with cash they need for their own tax bill.
       const taxNow = assessTax();
-      const purchases = planGiltPurchases(state, netNeed, scenario.rates, scenario.strategy, y + 1, {
-        nick: Math.max(0, taxNow.nick.due),
-        tracy: Math.max(0, taxNow.tracy.due),
-      });
+      const realMarket: RealGiltMarket | undefined = buyRealGilts
+        ? {
+            pricing,
+            byFundsYear: buyable,
+            purchaseIso: toIso(yearEnd),
+            selection: scenario.strategy.giltSelection ?? "netYield",
+            taxRate: { nick: marginalSavingsRate("nick"), tracy: marginalSavingsRate("tracy") },
+          }
+        : undefined;
+      const purchases = planGiltPurchases(
+        state,
+        netNeed,
+        scenario.rates,
+        scenario.strategy,
+        y + 1,
+        { nick: Math.max(0, taxNow.nick.due), tracy: Math.max(0, taxNow.tracy.due) },
+        realMarket,
+      );
       if (purchases.length) {
         const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
         const maturityYears = new Set<number>();
+        const realLabels: string[] = [];
         for (const gp of purchases) {
           const acc = state.balances[gp.holder];
+          if (gp.real) {
+            // A real gilt: paid for at its price (clean + accrued); the accrued interest bought
+            // relieves its first coupon.
+            const r = gp.real;
+            let nominal = gp.nominal;
+            if ((nominal * r.dirty) / 100 > acc.savings) nominal = Math.floor((Math.max(0, acc.savings) * 100) / r.dirty);
+            const cost = (nominal * r.dirty) / 100;
+            if (cost < 100) continue;
+            acc.savings -= cost;
+            state.gilts.push({
+              id: `g${state.giltCounter++}`,
+              holder: gp.holder,
+              name: r.name,
+              nominal,
+              couponRate: gp.couponRate,
+              cost,
+              purchaseYear: y + 1,
+              maturityYear: gp.maturityYear,
+              isin: r.isin,
+              redemptionIso: r.redemptionIso,
+              aisCredit: Math.max(0, (nominal * r.accrued) / 100),
+            });
+            gilts.push({
+              holder: gp.holder,
+              name: r.name,
+              nominal,
+              couponRate: gp.couponRate,
+              purchaseDateIso: toIso(yearEnd),
+              maturityDateIso: r.redemptionIso,
+              initial: false,
+              isin: r.isin,
+              cleanPrice: r.clean,
+              cost,
+              grossYield: r.grossYield,
+              netYield: r.netYield,
+              taxRate: r.taxRate,
+            });
+            const label = `${r.name}, matures ${shortDateIso(r.redemptionIso)}`;
+            if (!realLabels.includes(label)) realLabels.push(label);
+            const d = (deltas[gp.holder] ??= {});
+            d.savings = (d.savings ?? 0) - cost;
+            d.giltsTotal = (d.giltsTotal ?? 0) + cost;
+            continue;
+          }
           const spend = Math.min(gp.nominal, acc.savings);
           if (spend < 100) continue;
           acc.savings -= spend;
@@ -845,7 +954,11 @@ export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
             .sort()
             .map((yr) => shortDateIso(maturityIso(yr)))
             .join(", ");
-          txRow(`Gilt Purchase (matures ${matLabel})`, toIso(yearEnd), deltas);
+          const label =
+            realLabels.length === 0
+              ? `Gilt Purchase (matures ${matLabel})`
+              : `Gilt Purchase (${[...realLabels, ...(maturityYears.size ? [`fictional, matures ${matLabel}`] : [])].join("; ")})`;
+          txRow(label, toIso(yearEnd), deltas);
         }
       }
     }

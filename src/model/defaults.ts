@@ -45,6 +45,7 @@ export function defaultScenario(): Scenario {
       premiumBondRate: 0.035,
       inflation: 0.03,
       giltCoupon: 0.04,
+      giltYieldShift: 0,
       giaDividendYield: 0.02,
       statePensionGrowth: null, // triple lock floor
     },
@@ -62,6 +63,8 @@ export function defaultScenario(): Scenario {
       fillPersonalAllowanceFromPension: true,
       preserveIsa: true,
       giltLadderYears: 3,
+      giltUniverse: "real",
+      giltSelection: "netYield",
       taxMode: "heuristic",
     },
     finalIncome: {

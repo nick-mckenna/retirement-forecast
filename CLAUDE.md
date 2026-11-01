@@ -124,7 +124,8 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   extraction steps per person; this is where "which investment to sell" lives), `giltLadder.ts`
   (liability-matched, self-repairing ladder: next year is cash plus gilts maturing on its 6 April;
   each later window year, up to `giltLadderYears` ahead, gets whatever it is still short, nearest
-  first; opening gilts are spread across the first rung years by `initState`). The engine calls
+  first; opening gilts are spread across the first rung years by `initState`; with a
+  `RealGiltMarket` it buys real gilts — see "Gilt market"). The engine calls
   these; they return plans, the engine applies them. Keep that boundary.
 - **Tax is its own layer** (`src/tax/`): `incomeTax.ts` implements the real UK ordering
   (non-savings → savings → dividends, with PA taper, savings starting-rate band + PSA, dividend
@@ -290,7 +291,22 @@ bought.
   accrued paid on purchase relieves the first coupon; the £5,000 de-minimis is ignored), and is
   valued at market in the ledger's gilts column — a "Gilt revaluation" row before each balance
   books the difference, so the ledger still reconciles. At year end the buffer counts a real gilt
-  funding a year inside the buffer window at nominal and a longer one at market value.
+  funding a year inside the buffer window as the cash it will deliver (nominal + remaining
+  coupons — at nominal alone, buying with accrued interest would shrink the buffer) and a longer
+  one at market value.
+- **The ladder buys real gilts** when `strategy.giltUniverse` is `"real"` (the default) and the
+  context carries a priced market: `planGiltPurchases(…, market: RealGiltMarket)` fills each rung
+  year Y with a real conventional, non-rump gilt whose `fundsYear` is Y, chosen per holder by
+  `chooseRealGilt` and `strategy.giltSelection` — `netYield` (yield after tax at the holder's
+  marginal savings rate, `marginalSavingsRate` on the next £1,000 of this year's position; AIS
+  relief on the first coupon; CGT-free redemption — `netYield` in `pricing.ts`), `lowestCoupon`,
+  or `grossYield`. Rungs are sized in nominal (what they repay) and spare cash limits their
+  **cost** (buy-side clean + accrued, at the year-end date, priced with `rates.giltYieldShift`).
+  A year no real gilt redeems in time for gets a fictional gilt issued at par on the curve; with
+  `"fictional"`, or no prices (`giltMarket` passed but empty → a warning), the legacy par ladder
+  at `rates.giltCoupon` runs unchanged. Purchases are recorded with their price, cost and yields
+  (`GiltRecord`), shown in the Gilts tab (with a DMO market table: yields before and after 20% /
+  40% tax and the year each gilt funds) and the Excel "Gilts" sheet.
 
 ## Monthly expense tracker
 
