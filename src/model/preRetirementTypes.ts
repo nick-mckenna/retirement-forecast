@@ -14,6 +14,7 @@
 // month keys are "yyyy-mm", monetary values are GBP.
 
 import type { PersonId } from "./types";
+import type { GiltLot } from "../gilts/types";
 
 /** The grouping vocabulary: the retirement forecaster's pots + premiumBonds. */
 export type PreAccountKind = "isa" | "pension" | "gia" | "savings" | "premiumBonds" | "gilts";
@@ -59,9 +60,16 @@ export interface InvestmentAccount {
    *  on the last day of every month. 0 = none. */
   externalMonthlyContribution: number;
   /** Gilts accounts only: the calendar year the holding matures; null when unknown or for
-   *  other kinds. Only used to warn when it matures before the retirement handoff. */
+   *  other kinds. Only used to warn when it matures before the retirement handoff, and only for
+   *  an account held as a single figure (no gilt holdings recorded). */
   maturityYear: number | null;
+  /** Gilts accounts holding real gilts (`PreRetirementData.giltLots`): where coupons and
+   *  redemption money go — kept as cash in the account ("account", e.g. a broker platform), or
+   *  paid out ("external", e.g. to the joint current account). Ignored for other kinds. */
+  giltPayout: GiltPayout;
 }
+
+export type GiltPayout = "account" | "external";
 
 /** Re-anchors one account's projection: `value` is the account's actual
  *  balance at the END of `day` in `monthKey` (or at the end of the whole
@@ -88,6 +96,10 @@ export interface PreRetirementData {
   openingMonth: string;
   accounts: InvestmentAccount[];
   overrides: BalanceOverride[];
+  /** Real gilts held in "gilts" accounts, one entry per purchase. An account with any lots is
+   *  valued as its cash (its opening balance, coupons, redemptions, tagged flows) plus the lots
+   *  at market prices; one without lots is the single figure it always was. */
+  giltLots: GiltLot[];
 }
 
 function currentMonthKey(): string {
@@ -97,7 +109,7 @@ function currentMonthKey(): string {
 
 /** A truly empty document — what the server reports before anything is saved. */
 export function emptyPreRetirementData(): PreRetirementData {
-  return { openingMonth: currentMonthKey(), accounts: [], overrides: [] };
+  return { openingMonth: currentMonthKey(), accounts: [], overrides: [], giltLots: [] };
 }
 
 /** Fresh install: a generic sample registry — one account per person × kind,
@@ -120,6 +132,7 @@ export function defaultPreRetirementData(): PreRetirementData {
     reliefAtSource: false,
     externalMonthlyContribution: 0,
     maturityYear: null,
+    giltPayout: "account",
   });
   return {
     openingMonth: currentMonthKey(),
@@ -138,5 +151,6 @@ export function defaultPreRetirementData(): PreRetirementData {
       a("tracy-gilts", "Tracy Gilts", "tracy", "gilts"),
     ],
     overrides: [],
+    giltLots: [],
   };
 }

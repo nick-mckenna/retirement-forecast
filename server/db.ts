@@ -260,6 +260,46 @@ const SCHEMA: string[] = [
      value FLOAT NOT NULL,
      basis FLOAT NULL
    )`,
+  // Real gilts held in a gilt account (one row per purchase). Self-contained:
+  // name, coupon and redemption date are stored with the lot so it outlives
+  // the gilt's disappearance from the DMO's in-issue list.
+  `IF OBJECT_ID(N'dbo.PreRetirementGiltLot', N'U') IS NULL
+   CREATE TABLE dbo.PreRetirementGiltLot (
+     lotId NVARCHAR(64) NOT NULL CONSTRAINT PK_PreRetirementGiltLot PRIMARY KEY,
+     accountId NVARCHAR(64) NOT NULL
+       CONSTRAINT FK_PreRetirementGiltLot_Account
+       REFERENCES dbo.PreRetirementAccount(accountId) ON DELETE CASCADE,
+     isin NVARCHAR(12) NOT NULL,
+     name NVARCHAR(200) NOT NULL,
+     couponRate FLOAT NOT NULL,
+     redemptionDate DATE NOT NULL,
+     nominal FLOAT NOT NULL,
+     purchaseDate DATE NOT NULL,
+     purchaseCleanPrice FLOAT NULL,
+     sortOrder INT NOT NULL CONSTRAINT DF_PreRetirementGiltLot_sortOrder DEFAULT 0
+   )`,
+  // The gilt market (DMO reports): public, re-fetchable data cached for
+  // offline use and price history. Not part of backups.
+  `IF OBJECT_ID(N'dbo.GiltInstrument', N'U') IS NULL
+   CREATE TABLE dbo.GiltInstrument (
+     isin NVARCHAR(12) NOT NULL CONSTRAINT PK_GiltInstrument PRIMARY KEY,
+     name NVARCHAR(200) NOT NULL,
+     couponRate FLOAT NOT NULL,
+     redemptionDate DATE NOT NULL,
+     indexLinked BIT NOT NULL,
+     rump BIT NOT NULL CONSTRAINT DF_GiltInstrument_rump DEFAULT 0,
+     updatedAt DATETIME2 NOT NULL CONSTRAINT DF_GiltInstrument_updatedAt DEFAULT SYSUTCDATETIME()
+   )`,
+  `IF OBJECT_ID(N'dbo.GiltPrice', N'U') IS NULL
+   CREATE TABLE dbo.GiltPrice (
+     isin NVARCHAR(12) NOT NULL,
+     priceDate DATE NOT NULL,
+     buyClean FLOAT NOT NULL,
+     buyDirty FLOAT NOT NULL,
+     sellClean FLOAT NOT NULL,
+     sellDirty FLOAT NOT NULL,
+     CONSTRAINT PK_GiltPrice PRIMARY KEY (isin, priceDate)
+   )`,
   // The short-lived fixed-pots schema this registry replaced (shipped empty,
   // superseded the same week — safe to drop).
   `IF OBJECT_ID(N'dbo.PreRetirementOverride', N'U') IS NOT NULL DROP TABLE dbo.PreRetirementOverride`,
@@ -276,6 +316,12 @@ const SCHEMA: string[] = [
    ALTER TABLE dbo.PreRetirementAccount ADD maturityYear INT NULL`,
   `IF COL_LENGTH(N'dbo.PreRetirementAccountOverride', N'basis') IS NULL
    ALTER TABLE dbo.PreRetirementAccountOverride ADD basis FLOAT NULL`,
+  // Where a gilt account's coupons and redemptions go: kept as cash in the
+  // account, or paid out (to the joint current account).
+  `IF COL_LENGTH(N'dbo.PreRetirementAccount', N'giltPayout') IS NULL
+   ALTER TABLE dbo.PreRetirementAccount ADD giltPayout NVARCHAR(10) NOT NULL
+     CONSTRAINT DF_PreRetirementAccount_giltPayout DEFAULT N'account'
+     CONSTRAINT CK_PreRetirementAccount_giltPayout CHECK (giltPayout IN (N'account', N'external'))`,
   `IF COL_LENGTH(N'dbo.Scenario', N'linkPreRetirement') IS NULL
    ALTER TABLE dbo.Scenario ADD linkPreRetirement BIT NOT NULL
      CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0`,

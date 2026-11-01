@@ -6,6 +6,7 @@ import type { BalanceOverride } from "../../model/preRetirementTypes";
 import { latestOverride, overrideDateIso } from "../../preretirement/project";
 import { isMonthKey, monthKeyOf } from "../../expenses/calc";
 import { pct } from "../format";
+import { GiltHoldingsCard } from "./GiltHoldingsCard";
 
 function parseAmount(v: string): number {
   const n = parseFloat(v);
@@ -76,6 +77,7 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
         reliefAtSource: false,
         externalMonthlyContribution: 0,
         maturityYear: null,
+        giltPayout: "account",
       });
     });
 
@@ -84,7 +86,7 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
     if (!acc) return;
     if (
       !confirm(
-        `Delete "${acc.name}"?\n\nIts balance overrides are removed too. Expense lines tagged to it ` +
+        `Delete "${acc.name}"?\n\nIts balance overrides and gilt holdings are removed too. Expense lines tagged to it ` +
           `keep their tag but show as "(deleted account)" and stop feeding the forecast.`,
       )
     ) {
@@ -93,6 +95,7 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
     update((d) => {
       d.accounts = d.accounts.filter((a) => a.id !== id);
       d.overrides = d.overrides.filter((o) => o.accountId !== id);
+      d.giltLots = d.giltLots.filter((l) => l.accountId !== id);
     });
   };
 
@@ -118,9 +121,10 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
         <p className="muted" style={{ fontSize: 13 }}>
           Growth follows the account's type, using the active scenario's rates: ISA / Pension / GIA
           grow at {pct(scenario.rates.investmentGrowth)}, Savings at {pct(scenario.rates.savingsInterest)},
-          Premium Bonds at {pct(scenario.rates.premiumBondRate)} (tax-free prizes). Gilts are held at
-          their nominal value until retirement: their coupons aren't modelled here, so record them as
-          untagged income in the expense tracker.
+          Premium Bonds at {pct(scenario.rates.premiumBondRate)} (tax-free prizes). A gilts account
+          recorded as a single figure is held at that nominal value (record its coupons as untagged
+          income in the expense tracker); one with gilt holdings recorded below is valued at DMO prices,
+          its opening balance being its cash.
         </p>
       </div>
 
@@ -141,8 +145,9 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
           by the provider with 25% basic-rate relief (higher-rate relief you reclaim through
           self-assessment doesn't reach the pot and isn't added). <b>Outside / month</b>: money paid
           in from outside the joint account — employer contributions, salary sacrifice — already
-          gross, on the last day of each month. <b>Matures</b>: a gilt holding's maturity year; the
-          forecast warns if it matures before retirement. <b>Basis</b>: a GIA's recorded balance can
+          gross, on the last day of each month. <b>Matures</b>: for a gilts account recorded as a
+          single figure, the year it matures (the forecast warns if that is before retirement); an
+          account with gilt holdings uses each holding's own redemption date. <b>Basis</b>: a GIA's recorded balance can
           carry the cost basis from the platform's statement, which re-anchors the CGT basis. ISA,
           pension annual allowance and Premium Bond limits are checked and flagged above.
         </p>
@@ -175,6 +180,7 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
           <tbody>
             {data.accounts.map((a) => {
               const latest = latestOverride(data, a.id);
+              const hasLots = data.giltLots.some((l) => l.accountId === a.id);
               return (
                 <tr key={a.id}>
                   <td className="label">
@@ -197,6 +203,8 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
                   <td>
                     <select
                       value={a.kind}
+                      disabled={hasLots}
+                      title={hasLots ? "Remove its gilt holdings first" : undefined}
                       onChange={(ev) =>
                         editAccount(a.id, (x) => {
                           x.kind = ev.target.value as PreAccountKind;
@@ -218,8 +226,14 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
                       type="number"
                       step={1000}
                       value={a.openingBalance}
+                      title={hasLots ? "Cash only — the gilt holdings are valued separately" : undefined}
                       onChange={(ev) => editAccount(a.id, (x) => (x.openingBalance = parseAmount(ev.target.value)))}
                     />
+                    {hasLots && (
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        cash only
+                      </div>
+                    )}
                   </td>
                   <td>
                     {a.kind === "gia" ? (
@@ -263,7 +277,11 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
                     />
                   </td>
                   <td>
-                    {a.kind === "gilts" ? (
+                    {a.kind === "gilts" && hasLots ? (
+                      <span className="muted" title="Each holding's own redemption date is used">
+                        holdings
+                      </span>
+                    ) : a.kind === "gilts" ? (
                       <input
                         type="number"
                         step={1}
@@ -335,6 +353,7 @@ export function AccountsView({ scenario }: { scenario: Scenario }) {
         </div>
       </div>
 
+      <GiltHoldingsCard scenario={scenario} />
     </>
   );
 }

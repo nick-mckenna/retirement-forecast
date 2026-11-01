@@ -23,8 +23,22 @@ import {
 } from "../strategy/drawdown";
 import { planGiltPurchases } from "../strategy/giltLadder";
 import { emptyPersonColumns, INCOME_ROW_LABELS, type LedgerRow, type PersonColumns } from "./ledger";
-import { giaGainFraction, giltValue, initState, sellGia, sellGilts, type SimState } from "./state";
+import {
+  giaGainFraction,
+  giltValue,
+  initState,
+  isRealGilt,
+  redemptionOf,
+  sellGia,
+  sellGilts,
+  type GiltHolding,
+  type GiltSalePrice,
+  type SimState,
+} from "./state";
 import { PREMIUM_BOND_LIMIT } from "../tax/allowanceLimits";
+import type { GiltTerms, SimContext } from "../gilts/types";
+import { buildPricing } from "../gilts/pricing";
+import { accruedPer100, addDays, couponPer100, couponsBetween } from "../gilts/schedule";
 
 const PERSONS: PersonId[] = ["nick", "tracy"];
 
@@ -52,7 +66,8 @@ export interface YearDisposals {
   isaFill: Record<PersonId, number>;
   /** Gilts redeemed at par during the year (CGT-exempt). */
   giltMaturities: Record<PersonId, number>;
-  /** Gilts sold early (at par) because cash ran out before the year-end refill. */
+  /** Gilts sold early because cash ran out before the year-end refill (the cash raised: par for
+   *  the engine's own gilts, the market price for real ones). */
   giltSales: Record<PersonId, number>;
   /** Total capital gain realised on GIA disposals (sales + Bed & ISA). */
   realisedGain: Record<PersonId, number>;
@@ -96,6 +111,8 @@ export interface GiltRecord {
   maturityDateIso: string;
   /** True for gilts already held at the model start (not bought by the ladder). */
   initial: boolean;
+  /** Real gilts only: ISIN. */
+  isin?: string;
 }
 
 export interface SimResult {
@@ -105,9 +122,13 @@ export interface SimResult {
   gilts: GiltRecord[];
 }
 
-/** Gilts mature at the start of their tax year (6 April). */
+/** The engine's own gilts mature at the start of their tax year (6 April). */
 function maturityIso(maturityYear: number): string {
   return `${maturityYear}-04-06`;
+}
+
+function termsOf(g: GiltHolding): GiltTerms {
+  return { couponRate: g.couponRate, redemptionDate: redemptionOf(g) };
 }
 
 function shortDateIso(iso: string): string {
@@ -145,8 +166,13 @@ const addDelta = (d: Deltas, id: PersonId, col: keyof PersonColumns, v: number):
   row[col] = (row[col] ?? 0) + v;
 };
 
-export function simulate(scenario: Scenario): SimResult {
-  const state = initState(scenario);
+/**
+ * Run the whole plan. `ctx` carries what isn't part of the persisted scenario: real gilts
+ * handed over from the pre-retirement module (`openingGilts`) and the gilt market that prices
+ * them. Without it — or with no real gilts — every gilt is the engine's own par gilt.
+ */
+export function simulate(scenario: Scenario, ctx: SimContext = {}): SimResult {
+  const state = initState(scenario, ctx.openingGilts ?? []);
   const rows: LedgerRow[] = [];
   const years: YearSummary[] = [];
   const warnings: string[] = [];
@@ -156,9 +182,26 @@ export function simulate(scenario: Scenario): SimResult {
     nominal: g.nominal,
     couponRate: g.couponRate,
     purchaseDateIso: scenario.startDate,
-    maturityDateIso: maturityIso(g.maturityYear),
+    maturityDateIso: redemptionOf(g),
     initial: true,
+    ...(isRealGilt(g) ? { isin: g.isin } : {}),
   }));
+  const pricing = buildPricing(ctx.giltMarket ?? null);
+  /** A holding's market value at the end of `iso`: a real gilt at the sale price plus accrued
+   *  interest, the engine's own gilts at par. */
+  const holdingValue = (g: GiltHolding, iso: string): number =>
+    isRealGilt(g) ? (g.nominal * pricing.dirty(g.isin, termsOf(g), iso, "sell")) / 100 : g.nominal;
+  const giltsValueOf = (id: PersonId, iso: string): number => {
+    let v = 0;
+    for (const g of state.gilts) if (g.holder === id) v += holdingValue(g, iso);
+    return v;
+  };
+  /** What a real gilt sells for on `iso`, per £100 (dirty), and the accrued interest in it. */
+  const salePrice = (iso: string): GiltSalePrice => (g) => {
+    const terms = termsOf(g);
+    const accrued = accruedPer100(terms, iso);
+    return { dirty: pricing.clean(g.isin ?? "", terms, iso, "sell") + accrued, accrued };
+  };
 
   const mInv = annualToMonthly(scenario.rates.investmentGrowth);
   const mSav = annualToMonthly(scenario.rates.savingsInterest);
@@ -217,9 +260,26 @@ export function simulate(scenario: Scenario): SimResult {
   /** Income the monthly draw could not pay, per tax year (with the first month it happened). */
   const shortfalls = new Map<number, { amount: number; firstMonthIso: string }>();
 
-  const balanceRow = (label: string, dateIso: string): void => {
-    const nick = snapshot("nick");
-    const tracy = snapshot("tracy");
+  // The gilts column is booked at market value: before each balance row, any difference between
+  // what the deltas have booked and the gilts' value then (price movement, accrued interest) is
+  // booked as a revaluation, so every balance row still reconciles. The engine's own gilts are
+  // valued at par, so they never revalue.
+  const booked: Record<PersonId, number> = { nick: 0, tracy: 0 };
+  let bookedInit = false;
+  const balanceRow = (label: string, dateIso: string, valueIso: string = dateIso): void => {
+    const value = { nick: giltsValueOf("nick", valueIso), tracy: giltsValueOf("tracy", valueIso) };
+    if (bookedInit) {
+      const reval: Deltas = {};
+      for (const id of PERSONS) {
+        const diff = value[id] - booked[id];
+        if (Math.abs(diff) > 0.005) reval[id] = { giltsTotal: diff };
+      }
+      if (Object.keys(reval).length) txRow("Gilt revaluation", dateIso, reval);
+    }
+    for (const id of PERSONS) booked[id] = value[id];
+    bookedInit = true;
+    const nick = snapshot("nick", value.nick);
+    const tracy = snapshot("tracy", value.tracy);
     const savingsAndGilts =
       nick.savings + tracy.savings + nick.giltsTotal + tracy.giltsTotal;
     const netWorth =
@@ -227,7 +287,7 @@ export function simulate(scenario: Scenario): SimResult {
       tracy.isa + tracy.pension + tracy.gia + tracy.savings + tracy.giltsTotal;
     rows.push({ type: "BALANCE", label, dateIso, nick, tracy, savingsAndGilts, netWorth });
   };
-  const snapshot = (id: PersonId): PersonColumns => {
+  const snapshot = (id: PersonId, giltsTotal: number): PersonColumns => {
     const b = state.balances[id];
     return {
       income: 0,
@@ -235,7 +295,7 @@ export function simulate(scenario: Scenario): SimResult {
       pension: b.pension,
       gia: b.gia,
       savings: b.savings + b.premiumBonds, // Premium Bonds are cash-like: shown with cash
-      giltsTotal: giltValue(state, id),
+      giltsTotal,
       tax: 0,
     };
   };
@@ -247,6 +307,8 @@ export function simulate(scenario: Scenario): SimResult {
   ): void => {
     const nick = { ...emptyPersonColumns(), ...deltas.nick };
     const tracy = { ...emptyPersonColumns(), ...deltas.tracy };
+    booked.nick += nick.giltsTotal;
+    booked.tracy += tracy.giltsTotal;
     rows.push({
       type: "TRANSACTION",
       label,
@@ -277,7 +339,7 @@ export function simulate(scenario: Scenario): SimResult {
   if (!finalIncomeHandled && fiAt < modelStart.getTime()) {
     for (const id of PERSONS) state.balances[id].savings += fi.perPerson[id].net;
     txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
-    balanceRow("After Final Income", fi.date);
+    balanceRow("After Final Income", fi.date, scenario.startDate);
     finalIncomeHandled = true;
   }
 
@@ -427,7 +489,7 @@ export function simulate(scenario: Scenario): SimResult {
 
     const refillAmount = (target: number): number => {
       const sell = (t: number): Withdrawal[] => refillSales(t, buildPlans(yearEnd));
-      const gapBeforeSale = target - currentBuffer(state);
+      const gapBeforeSale = target - currentBuffer(state, bufferValue);
       let t = gapBeforeSale + taxDue();
       for (let k = 0; k < 50; k++) {
         const next = gapBeforeSale + taxDue(sell(t));
@@ -449,8 +511,49 @@ export function simulate(scenario: Scenario): SimResult {
       return planned.reduce((s, w) => s + w.gross, 0);
     };
 
-    // Gilt maturities (redeem at par -> cash; capital gain CGT-exempt).
-    const matured = state.gilts.filter((g) => g.maturityYear <= y);
+    // Coupons and redemptions of real gilts dated in [fromIso, toIsoExcl): cash in; coupons are
+    // taxable savings income beyond any accrued-income credit; a redemption repays the nominal
+    // (CGT-exempt). Booked on their actual dates.
+    const realGiltEvents = (fromIso: string, toIsoExcl: string): void => {
+      if (fromIso >= toIsoExcl) return;
+      const fromExcl = addDays(fromIso, -1);
+      const toIncl = addDays(toIsoExcl, -1);
+      const byDate = new Map<string, { coupons: Deltas; redemptions: Deltas }>();
+      const at = (iso: string) => {
+        let e = byDate.get(iso);
+        if (!e) byDate.set(iso, (e = { coupons: {}, redemptions: {} }));
+        return e;
+      };
+      const redeemed = new Set<GiltHolding>();
+      for (const g of state.gilts) {
+        if (!isRealGilt(g)) continue;
+        const terms = termsOf(g);
+        for (const c of couponsBetween(terms, fromExcl, toIncl)) {
+          const amount = (g.nominal * couponPer100(terms)) / 100;
+          const relief = Math.min(g.aisCredit ?? 0, amount);
+          if (relief > 0) g.aisCredit = (g.aisCredit ?? 0) - relief;
+          state.balances[g.holder].savings += amount;
+          accum.savingsIncome[g.holder] += amount - relief;
+          addDelta(at(c).coupons, g.holder, "savings", amount);
+        }
+        if (g.redemptionIso > fromExcl && g.redemptionIso <= toIncl) {
+          state.balances[g.holder].savings += g.nominal;
+          disposals.giltMaturities[g.holder] += g.nominal;
+          addDelta(at(g.redemptionIso).redemptions, g.holder, "savings", g.nominal);
+          addDelta(at(g.redemptionIso).redemptions, g.holder, "giltsTotal", -g.nominal);
+          redeemed.add(g);
+        }
+      }
+      if (redeemed.size > 0) state.gilts = state.gilts.filter((g) => !redeemed.has(g));
+      for (const date of [...byDate.keys()].sort()) {
+        const e = byDate.get(date)!;
+        if (Object.keys(e.coupons).length) txRow("Gilt Coupon", date, e.coupons);
+        if (Object.keys(e.redemptions).length) txRow("Gilt Maturity", date, e.redemptions);
+      }
+    };
+
+    // The engine's own gilt maturities (redeem at par -> cash; capital gain CGT-exempt).
+    const matured = state.gilts.filter((g) => !isRealGilt(g) && g.maturityYear <= y);
     if (matured.length > 0) {
       const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
       for (const g of matured) {
@@ -461,14 +564,16 @@ export function simulate(scenario: Scenario): SimResult {
           giltsTotal: (deltas[g.holder]?.giltsTotal ?? 0) - g.nominal,
         };
       }
-      state.gilts = state.gilts.filter((g) => g.maturityYear > y);
+      state.gilts = state.gilts.filter((g) => isRealGilt(g) || g.maturityYear > y);
       txRow("Gilt Maturity", openIso, deltas);
     }
 
-    // Gilt coupons (taxable savings income; paid into cash) — for the modelled part of the year.
+    // The engine's own gilt coupons (taxable savings income; paid into cash) — for the modelled
+    // part of the year.
     if (state.gilts.length > 0 && yearFraction > 0) {
       const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
       for (const g of state.gilts) {
+        if (isRealGilt(g)) continue;
         const coupon = g.nominal * g.couponRate * yearFraction;
         state.balances[g.holder].savings += coupon;
         accum.savingsIncome[g.holder] += coupon;
@@ -500,6 +605,9 @@ export function simulate(scenario: Scenario): SimResult {
       }
       if (any) txRow("ISA Fill (Bed & ISA)", openIso, deltas);
     }
+
+    // Real gilts' coupons and redemptions between the model start and the first modelled month.
+    realGiltEvents(openIso, toIso(addMonths(yearStart, firstMonth)));
 
     // --- Monthly steps (all 12, or those after the start in a part first year) ---
     const monthlyTarget = targetForYear(income, y) / 12;
@@ -567,17 +675,22 @@ export function simulate(scenario: Scenario): SimResult {
         finalIncomeHandled = true;
       }
 
+      // Real gilts' coupons and redemptions this month (before the draw they help fund).
+      realGiltEvents(toIso(monthDate), toIso(new Date(nextMonth)));
+
       // Draw the monthly income need from the buffer (split evenly): cash first, then gilts.
       // Each pot that moves is booked to its owner, the income to the person drawing.
       const perPerson = monthlyTarget / 2;
       const inc: Deltas = {};
       for (const id of PERSONS) {
-        const d = drawFromBuffer(state, id, perPerson);
+        const d = drawFromBuffer(state, id, perPerson, salePrice(toIso(monthDate)));
         addDelta(inc, id, "income", d.drawn);
         for (const q of PERSONS) {
           addDelta(inc, q, "savings", -d.cash[q]);
           addDelta(inc, q, "giltsTotal", -d.gilts[q]);
           disposals.giltSales[q] += d.gilts[q];
+          // Accrued interest in a real gilt's sale price is taxable (Accrued Income Scheme).
+          accum.savingsIncome[q] += d.accruedIncome[q];
         }
         const short = perPerson - d.drawn;
         if (short > 0.01) {
@@ -606,8 +719,16 @@ export function simulate(scenario: Scenario): SimResult {
         }
       }
 
-      balanceRow("Balance", toIso(monthDate));
+      // Valued at the end of the month's window, after its events.
+      balanceRow("Balance", toIso(monthDate), addDays(toIso(new Date(nextMonth)), -1));
     }
+
+    // At year end the buffer counts a real gilt maturing within its window at its redemption
+    // value (what it will pay) and one maturing beyond it at market value (what it would sell
+    // for); the engine's own gilts always at par.
+    const bufferWindowEnd = y + Math.ceil(scenario.strategy.bufferYears);
+    const bufferValue = (g: GiltHolding): number =>
+      isRealGilt(g) && g.maturityYear > bufferWindowEnd ? holdingValue(g, toIso(yearEnd)) : g.nominal;
 
     // --- Year-end (5 April y+1): crystallise, refill buffer, buy gilts, compute tax ---
     if (scenario.strategy.autoStrategy) {
@@ -657,7 +778,7 @@ export function simulate(scenario: Scenario): SimResult {
       //    allowance, then the GIA at cost — rather than left idle as cash.
       const surplus = Math.min(
         crystallised.nick + crystallised.tracy,
-        currentBuffer(state) - target - Math.max(0, taxDue()),
+        currentBuffer(state, bufferValue) - target - Math.max(0, taxDue()),
       );
       if (surplus > 1) {
         const deltas: Deltas = {};
@@ -761,7 +882,7 @@ export function simulate(scenario: Scenario): SimResult {
       tracyAge: ageAtTaxYearStart(scenario.people.tracy.dob, y),
       incomeTarget: targetForYear(income, y),
       bufferTargetValue: bufTargetVal,
-      bufferEnd: currentBuffer(state),
+      bufferEnd: currentBuffer(state, bufferValue),
       netWorthEnd: nw,
       tax: yearTax,
       withdrawals,
@@ -953,26 +1074,35 @@ function spendCash(state: SimState, amount: number): Record<PersonId, number> {
 
 /**
  * Draw a person's monthly income from the buffer: own cash, then the spouse's cash, then own
- * gilts, then the spouse's gilts (sold at par, nearest maturity first) — gilts are part of the
- * buffer precisely so income keeps flowing when cash runs out before the next refill. Returns
- * the amount drawn and where it came from, so the ledger books each pot to its owner.
+ * gilts, then the spouse's gilts (nearest maturity first; the engine's own at par, real ones at
+ * `price`) — gilts are part of the buffer precisely so income keeps flowing when cash runs out
+ * before the next refill. Returns the amount drawn and where it came from, so the ledger books
+ * each pot to its owner, and the accrued interest sold with real gilts (taxable).
  */
 function drawFromBuffer(
   state: SimState,
   id: PersonId,
   amount: number,
-): { drawn: number; cash: Record<PersonId, number>; gilts: Record<PersonId, number> } {
+  price?: GiltSalePrice,
+): {
+  drawn: number;
+  cash: Record<PersonId, number>;
+  gilts: Record<PersonId, number>;
+  accruedIncome: Record<PersonId, number>;
+} {
   const other: PersonId = id === "nick" ? "tracy" : "nick";
   const cash: Record<PersonId, number> = { nick: 0, tracy: 0 };
   const gilts: Record<PersonId, number> = { nick: 0, tracy: 0 };
+  const accruedIncome: Record<PersonId, number> = { nick: 0, tracy: 0 };
   let remaining = takeCash(state, [id, other], amount, cash);
   for (const who of [id, other]) {
     if (remaining <= 0.005) break;
-    const sold = sellGilts(state, who, remaining);
-    gilts[who] += sold;
-    remaining -= sold;
+    const sold = sellGilts(state, who, remaining, price);
+    gilts[who] += sold.proceeds;
+    accruedIncome[who] += sold.accruedIncome;
+    remaining -= sold.proceeds;
   }
-  return { drawn: amount - remaining, cash, gilts };
+  return { drawn: amount - remaining, cash, gilts, accruedIncome };
 }
 
 function blankTax(): PersonTax {

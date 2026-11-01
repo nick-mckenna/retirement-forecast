@@ -8,7 +8,9 @@
 // Accounts aggregate into retirement pots by (owner, kind): isa→isa,
 // pension→pension, gia→gia (with the tracked cost basis turned into
 // giaGainFraction), savings→savings, premiumBonds→premiumBonds (tax-free cash,
-// part of the buffer), gilts→gilts.
+// part of the buffer), gilts→gilts. A gilt account holding real gilts hands over its
+// cash as savings and its gilts themselves (`openingGilts`, via SimContext), so the
+// engine redeems them on their real dates and pays their real coupons.
 
 import type { PersonId, Scenario, StartingBalances } from "../model/types";
 import type { ExpenseMonth, ExpenseTemplates } from "../model/expenseTypes";
@@ -17,6 +19,9 @@ import { PERSON_IDS } from "../model/preRetirementTypes";
 import { monthLabel } from "../expenses/calc";
 import { isIsoDate } from "../tax/taxYear";
 import { allowanceWarnings } from "./allowances";
+import { openingGiltsAt } from "./giltAccounts";
+import { buildPricing } from "../gilts/pricing";
+import type { GiltMarket, OpeningGilt, SimContext } from "../gilts/types";
 import {
   projectAccounts,
   ratesForKinds,
@@ -39,6 +44,7 @@ export function handoffMonthKey(scenarioStartDate: string): string | null {
 export function isUnconfigured(pre: PreRetirementData, result: PreRetirementResult): boolean {
   if (pre.accounts.some((a) => a.openingBalance !== 0)) return false;
   if (pre.overrides.some((o) => o.value !== 0)) return false;
+  if (pre.giltLots.length > 0) return false;
   const last = result.months[result.months.length - 1];
   return !last || Object.values(last.byAccount).every((c) => c.end === 0);
 }
@@ -78,7 +84,9 @@ export function handoffBalances(
         pots.premiumBonds += value;
         break;
       case "gilts":
-        pots.gilts += value;
+        // An account holding real gilts: its cash is savings; the gilts go over as themselves.
+        if (a.id in sample.giltCash) pots.savings += sample.giltCash[a.id];
+        else pots.gilts += value;
         break;
     }
   }
@@ -111,11 +119,13 @@ export function resolveLinkedBalances(
   pre: PreRetirementData,
   expenseMonths: ExpenseMonth[],
   templates?: ExpenseTemplates,
-): { balances: Record<PersonId, StartingBalances>; warnings: string[] } {
+  market?: GiltMarket | null,
+): { balances: Record<PersonId, StartingBalances>; openingGilts: OpeningGilt[]; warnings: string[] } {
   const endMonth = handoffMonthKey(scenario.startDate);
   if (endMonth == null) {
     return {
       balances: scenario.balances,
+      openingGilts: [],
       warnings: [
         "Pre-retirement link: the model start date isn't a valid date — using the scenario's manual balances instead.",
       ],
@@ -124,6 +134,7 @@ export function resolveLinkedBalances(
   if (pre.accounts.length === 0) {
     return {
       balances: scenario.balances,
+      openingGilts: [],
       warnings: [
         "Pre-retirement link: no accounts are set up in the Pre-retirement module — using the scenario's manual balances instead.",
       ],
@@ -132,6 +143,7 @@ export function resolveLinkedBalances(
   if (endMonth < pre.openingMonth) {
     return {
       balances: scenario.balances,
+      openingGilts: [],
       warnings: [
         `Pre-retirement link: the scenario starts (${scenario.startDate}) before the pre-retirement ` +
           `opening month (${monthLabel(pre.openingMonth)}) — using the scenario's manual balances instead.`,
@@ -139,17 +151,19 @@ export function resolveLinkedBalances(
     };
   }
   const rates = ratesForKinds(scenario.rates);
-  const result = projectAccounts(pre, expenseMonths, rates, endMonth, templates);
+  const result = projectAccounts(pre, expenseMonths, rates, endMonth, templates, buildPricing(market));
   const handoff = handoffBalances(result, sampleAtDate(result, pre, expenseMonths, rates, scenario.startDate));
   if (!handoff) {
     return {
       balances: scenario.balances,
+      openingGilts: [],
       warnings: ["Pre-retirement link: the projection is empty — using the scenario's manual balances instead."],
     };
   }
   if (isUnconfigured(pre, result)) {
     return {
       balances: scenario.balances,
+      openingGilts: [],
       warnings: [
         "Pre-retirement link: no balances have been entered in the Pre-retirement module yet (every " +
           "account is at zero) — using the scenario's manual balances instead.",
@@ -158,6 +172,7 @@ export function resolveLinkedBalances(
   }
   return {
     balances: handoff.balances,
+    openingGilts: openingGiltsAt(pre, result.accounts, scenario.startDate),
     warnings: [...result.warnings, ...allowanceWarnings(result, expenseMonths, scenario), ...handoff.warnings].map(
       (w) => `Pre-retirement link: ${w}`,
     ),
@@ -165,14 +180,16 @@ export function resolveLinkedBalances(
 }
 
 /** What the UI feeds to runForecast: the scenario itself when the link is
- *  off, else a copy with the projected balances. Keeps simulate() pure. */
+ *  off, else a copy with the projected balances; plus the run context (the gilt market, and
+ *  the real gilts handed over). Keeps simulate() pure. */
 export function resolveScenarioForRun(
   scenario: Scenario,
   pre: PreRetirementData,
   expenseMonths: ExpenseMonth[],
   templates?: ExpenseTemplates,
-): { scenario: Scenario; warnings: string[] } {
-  if (!scenario.linkPreRetirement) return { scenario, warnings: [] };
-  const { balances, warnings } = resolveLinkedBalances(scenario, pre, expenseMonths, templates);
-  return { scenario: { ...scenario, balances }, warnings };
+  market?: GiltMarket | null,
+): { scenario: Scenario; warnings: string[]; ctx: SimContext } {
+  if (!scenario.linkPreRetirement) return { scenario, warnings: [], ctx: { giltMarket: market ?? null } };
+  const { balances, openingGilts, warnings } = resolveLinkedBalances(scenario, pre, expenseMonths, templates, market);
+  return { scenario: { ...scenario, balances }, warnings, ctx: { giltMarket: market ?? null, openingGilts } };
 }

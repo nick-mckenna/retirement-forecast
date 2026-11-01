@@ -3,6 +3,8 @@ import type { PersonId, Scenario } from "../model/types";
 import { useStore } from "../store/scenarioStore";
 import { usePreRetirementStore } from "../store/preRetirementStore";
 import { useExpenseStore } from "../store/expenseStore";
+import { useGiltMarketStore } from "../store/giltMarketStore";
+import { buildPricing } from "../gilts/pricing";
 import { resolveLinkedBalances } from "../preretirement/link";
 import { investableAssets, resolveIncome } from "../model/incomeTargets";
 import { firstModelledTaxYear, isIsoDate } from "../tax/taxYear";
@@ -157,11 +159,20 @@ export function InputsPanel() {
   const preData = usePreRetirementStore((st) => st.data);
   const expenseMonths = useExpenseStore((st) => st.data.months);
   const expenseTemplates = useExpenseStore((st) => st.data.templates);
+  const giltMarket = useGiltMarketStore((st) => st.market);
 
   const linked = useMemo(
-    () => (s.linkPreRetirement ? resolveLinkedBalances(s, preData, expenseMonths, expenseTemplates) : null),
-    [s, preData, expenseMonths, expenseTemplates],
+    () => (s.linkPreRetirement ? resolveLinkedBalances(s, preData, expenseMonths, expenseTemplates, giltMarket) : null),
+    [s, preData, expenseMonths, expenseTemplates, giltMarket],
   );
+  // Real gilts handed over by the link, at market value on the start date.
+  const realGilts = useMemo(() => {
+    const out: Record<PersonId, number> = { nick: 0, tracy: 0 };
+    if (!linked) return out;
+    const pricing = buildPricing(giltMarket);
+    for (const g of linked.openingGilts) out[g.holder] += (g.nominal * pricing.dirty(g.isin, g, s.startDate, "sell")) / 100;
+    return out;
+  }, [linked, giltMarket, s.startDate]);
 
   const person = (id: PersonId) => {
     const set = (mut: (sc: Scenario) => void) => update(mut);
@@ -228,6 +239,7 @@ export function InputsPanel() {
             <ValueRow label="Savings" value={money(lb.savings)} />
             <ValueRow label="Premium Bonds" value={money(lb.premiumBonds)} />
             <ValueRow label="Gilts" value={money(lb.gilts)} />
+            {realGilts[id] > 0 && <ValueRow label="Gilts (DMO holdings)" value={money(realGilts[id])} />}
             <ValueRow label="GIA embedded gain" value={pct(lb.giaGainFraction)} />
           </>
         ) : (

@@ -21,6 +21,7 @@ function acct(id: string, owner: PersonId, kind: PreAccountKind, name = id): Inv
     reliefAtSource: false,
     externalMonthlyContribution: 0,
     maturityYear: null,
+    giltPayout: "account",
   };
 }
 

@@ -42,12 +42,13 @@ function account(partial: Partial<InvestmentAccount> & { id: string }): Investme
     reliefAtSource: false,
     externalMonthlyContribution: 0,
     maturityYear: null,
+    giltPayout: "account",
     ...partial,
   };
 }
 
 function data(accounts: InvestmentAccount[], openingMonth = "2026-07"): PreRetirementData {
-  return { openingMonth, accounts, overrides: [] };
+  return { openingMonth, accounts, overrides: [], giltLots: [] };
 }
 
 /** A bare expense month containing only the given tagged lines

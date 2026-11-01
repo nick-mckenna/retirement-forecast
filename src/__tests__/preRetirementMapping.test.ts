@@ -23,6 +23,7 @@ function fullPreRetirementData(): PreRetirementData {
         reliefAtSource: false,
         externalMonthlyContribution: 0,
         maturityYear: null,
+        giltPayout: "account",
       },
       {
         id: "nick-gia",
@@ -34,6 +35,7 @@ function fullPreRetirementData(): PreRetirementData {
         reliefAtSource: false,
         externalMonthlyContribution: 250.5,
         maturityYear: null,
+        giltPayout: "account",
       },
       {
         id: "tracy-pension",
@@ -45,6 +47,7 @@ function fullPreRetirementData(): PreRetirementData {
         reliefAtSource: true,
         externalMonthlyContribution: 812.34,
         maturityYear: null,
+        giltPayout: "account",
       },
       {
         id: "tracy-premium-bonds",
@@ -56,6 +59,19 @@ function fullPreRetirementData(): PreRetirementData {
         reliefAtSource: false,
         externalMonthlyContribution: 0,
         maturityYear: 2031,
+        giltPayout: "account",
+      },
+      {
+        id: "tracy-gilts",
+        name: "Tracy Gilts",
+        owner: "tracy",
+        kind: "gilts",
+        openingBalance: 1500.25,
+        openingGainFraction: null,
+        reliefAtSource: false,
+        externalMonthlyContribution: 0,
+        maturityYear: null,
+        giltPayout: "external",
       },
     ],
     overrides: [
@@ -65,6 +81,30 @@ function fullPreRetirementData(): PreRetirementData {
       // Same month recorded twice (mid-month, then month end) — both kept.
       { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: null, value: 42150, basis: null },
       { accountId: "tracy-premium-bonds", monthKey: "2027-01", day: 10, value: 42090, basis: null },
+    ],
+    giltLots: [
+      {
+        id: "lot-1",
+        accountId: "tracy-gilts",
+        isin: "GB00TEST0006",
+        name: "0 1/4% Test Gilt 2031",
+        couponRate: 0.0025,
+        redemptionDate: "2031-07-31",
+        nominal: 12000,
+        purchaseDate: "2026-08-14",
+        purchaseCleanPrice: 80.84,
+      },
+      {
+        id: "lot-2",
+        accountId: "tracy-gilts",
+        isin: "GB00TEST0001",
+        name: "4 1/2% Test Gilt 2028",
+        couponRate: 0.045,
+        redemptionDate: "2028-03-07",
+        nominal: 5000.5,
+        purchaseDate: "2025-12-01",
+        purchaseCleanPrice: null,
+      },
     ],
   };
 }
@@ -95,6 +135,15 @@ function simulateDbReadback(rows: PreRetirementRows): PreRetirementRows {
       reliefAtSource: r.reliefAtSource ? 1 : 0, // BIT comes back as 0/1 or a boolean
     })),
     overrides: rows.overrides.map((r) => ({ ...r, value: s(r.value)!, basis: s(r.basis) })),
+    giltLots: rows.giltLots.map((r) => ({
+      ...r,
+      couponRate: s(r.couponRate)!,
+      nominal: s(r.nominal)!,
+      purchaseCleanPrice: s(r.purchaseCleanPrice),
+      // DATE columns come back as Date objects.
+      redemptionDate: new Date(`${String(r.redemptionDate)}T00:00:00Z`),
+      purchaseDate: new Date(`${String(r.purchaseDate)}T00:00:00Z`),
+    })),
   };
 }
 
@@ -120,12 +169,13 @@ describe("pre-retirement SQL row mapping", () => {
     expect(keys(back)).toEqual(keys(d));
     expect(keys(back.accounts[0])).toEqual(keys(d.accounts[0]));
     expect(keys(back.overrides[0])).toEqual(keys(d.overrides[0]));
+    expect(keys(back.giltLots[0])).toEqual(keys(d.giltLots[0]));
   });
 
   it("preserves account order via sortOrder and renames owner ↔ ownerId", () => {
     const d = fullPreRetirementData();
     const rows = preRetirementToRows(d);
-    expect(rows.accounts.map((a) => a.sortOrder)).toEqual([0, 1, 2, 3]);
+    expect(rows.accounts.map((a) => a.sortOrder)).toEqual([0, 1, 2, 3, 4]);
     expect(rows.accounts[2].ownerId).toBe("tracy");
     expect(rows.state.id).toBe(1);
     // Shuffle rows; read side must restore registry order.
@@ -144,6 +194,10 @@ describe("pre-retirement SQL row mapping", () => {
     expect(back.accounts[2].reliefAtSource).toBe(true);
     expect(back.accounts[2].externalMonthlyContribution).toBe(812.34);
     expect(back.accounts[3].maturityYear).toBe(2031);
+    expect(back.accounts[4].giltPayout).toBe("external");
+    expect(back.giltLots.map((l) => l.id)).toEqual(["lot-1", "lot-2"]);
+    expect(back.giltLots[0].redemptionDate).toBe("2031-07-31");
+    expect(back.giltLots[1].purchaseCleanPrice).toBeNull();
   });
 
   it("reads rows saved before the account settings existed with their defaults", () => {
@@ -153,10 +207,13 @@ describe("pre-retirement SQL row mapping", () => {
       delete r.reliefAtSource;
       delete r.externalMonthlyContribution;
       delete r.maturityYear;
+      delete r.giltPayout;
     }
     for (const o of rows.overrides) delete (o as unknown as Record<string, unknown>).basis;
-    const back = rowsToPreRetirement(rows);
+    const back = rowsToPreRetirement({ ...rows, giltLots: undefined as unknown as [] });
     expect(back.accounts.every((a) => !a.reliefAtSource && a.externalMonthlyContribution === 0 && a.maturityYear === null)).toBe(true);
+    expect(back.accounts.every((a) => a.giltPayout === "account")).toBe(true);
+    expect(back.giltLots).toEqual([]);
     expect(back.overrides.every((o) => o.basis === null)).toBe(true);
   });
 });

@@ -10,6 +10,7 @@ import {
   preRetirementToRows,
   rowsToPreRetirement,
   type PreRetirementAccountRow,
+  type PreRetirementGiltLotRow,
   type PreRetirementOverrideRow,
   type PreRetirementStateRow,
 } from "./preRetirementMapping";
@@ -32,10 +33,11 @@ async function insertRow(
 /** Returns an empty document (no accounts) when nothing has been saved yet —
  *  the client store then seeds the database from its local default registry. */
 export async function loadPreRetirement(pool: sql.ConnectionPool): Promise<PreRetirementData> {
-  const [state, accounts, overrides] = await Promise.all([
+  const [state, accounts, overrides, giltLots] = await Promise.all([
     pool.request().query<PreRetirementStateRow>("SELECT * FROM dbo.PreRetirementState"),
     pool.request().query<PreRetirementAccountRow>("SELECT * FROM dbo.PreRetirementAccount"),
     pool.request().query<PreRetirementOverrideRow>("SELECT * FROM dbo.PreRetirementAccountOverride"),
+    pool.request().query<PreRetirementGiltLotRow>("SELECT * FROM dbo.PreRetirementGiltLot"),
   ]);
   const stateRow = state.recordset[0];
   if (!stateRow) return emptyPreRetirementData();
@@ -43,6 +45,7 @@ export async function loadPreRetirement(pool: sql.ConnectionPool): Promise<PreRe
     state: stateRow,
     accounts: accounts.recordset,
     overrides: overrides.recordset,
+    giltLots: giltLots.recordset,
   });
 }
 
@@ -56,13 +59,16 @@ export async function replaceAllPreRetirement(
   await tx.begin();
   try {
     await new sql.Request(tx).query("DELETE FROM dbo.PreRetirementState");
-    await new sql.Request(tx).query("DELETE FROM dbo.PreRetirementAccount"); // overrides cascade
+    await new sql.Request(tx).query("DELETE FROM dbo.PreRetirementAccount"); // overrides and lots cascade
     await insertRow(tx, "PreRetirementState", rows.state as unknown as Record<string, unknown>);
     for (const a of rows.accounts) {
       await insertRow(tx, "PreRetirementAccount", a as unknown as Record<string, unknown>);
     }
     for (const o of rows.overrides) {
       await insertRow(tx, "PreRetirementAccountOverride", o as unknown as Record<string, unknown>);
+    }
+    for (const l of rows.giltLots) {
+      await insertRow(tx, "PreRetirementGiltLot", l as unknown as Record<string, unknown>);
     }
     await tx.commit();
   } catch (e) {

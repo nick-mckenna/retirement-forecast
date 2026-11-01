@@ -16,6 +16,9 @@ import {
   upsertMonth,
 } from "./expenseRepo";
 import { loadPreRetirement, replaceAllPreRetirement } from "./preRetirementRepo";
+import { loadMarket } from "./giltMarketRepo";
+import { refreshMarket } from "./dmoClient";
+import { isIsoDate } from "../src/tax/taxYear";
 import { migrateExpenseData, migratePreRetirementData, migrateScenario } from "../src/model/migrate";
 import { isMonthKey } from "../src/expenses/calc";
 import type { Scenario } from "../src/model/types";
@@ -24,6 +27,8 @@ import type { PreRetirementData } from "../src/model/preRetirementTypes";
 import { PRE_ACCOUNT_KINDS } from "../src/model/preRetirementTypes";
 
 const PORT = Number(process.env.PORT ?? 5174);
+
+const ISIN = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 
 export const BACKUP_FORMAT = "retirement-forecast-backup";
 
@@ -109,6 +114,7 @@ function assertPreRetirementData(body: unknown): PreRetirementData {
     if (a.maturityYear != null && (!Number.isInteger(a.maturityYear) || a.maturityYear < 1900 || a.maturityYear > 2200)) {
       throw bad(`Bad maturity year for account "${a.id}"`);
     }
+    if (a.giltPayout !== "account" && a.giltPayout !== "external") throw bad(`Bad gilt payout for account "${a.id}"`);
   }
   for (const o of d.overrides) {
     if (!ids.has(o.accountId) || !isMonthKey(o.monthKey) || !Number.isFinite(o.value)) {
@@ -119,6 +125,26 @@ function assertPreRetirementData(body: unknown): PreRetirementData {
     }
     if (o.basis != null && (!Number.isFinite(o.basis) || o.basis < 0)) {
       throw bad("Bad balance override basis in pre-retirement data");
+    }
+  }
+  const lotIds = new Set<string>();
+  for (const l of d.giltLots) {
+    if (typeof l.id !== "string" || l.id === "" || lotIds.has(l.id)) throw bad("Bad or duplicate gilt holding id");
+    lotIds.add(l.id);
+    const acc = d.accounts.find((a) => a.id === l.accountId);
+    if (!acc || acc.kind !== "gilts") throw bad(`Gilt holding "${l.id}" is not in a gilts account`);
+    if (typeof l.isin !== "string" || !ISIN.test(l.isin) || typeof l.name !== "string") {
+      throw bad(`Bad ISIN or name for gilt holding "${l.id}"`);
+    }
+    if (!Number.isFinite(l.couponRate) || l.couponRate < 0 || l.couponRate > 0.25) {
+      throw bad(`Bad coupon for gilt holding "${l.id}"`);
+    }
+    if (!isIsoDate(l.redemptionDate) || !isIsoDate(l.purchaseDate) || l.purchaseDate >= l.redemptionDate) {
+      throw bad(`Bad dates for gilt holding "${l.id}"`);
+    }
+    if (!Number.isFinite(l.nominal) || l.nominal <= 0) throw bad(`Bad nominal for gilt holding "${l.id}"`);
+    if (l.purchaseCleanPrice != null && (!Number.isFinite(l.purchaseCleanPrice) || l.purchaseCleanPrice <= 0)) {
+      throw bad(`Bad purchase price for gilt holding "${l.id}"`);
     }
   }
   return d;
@@ -199,6 +225,26 @@ app.put("/api/preretirement", async (req, res) => {
   const { data } = req.body as { data: unknown };
   await replaceAllPreRetirement(await getPool(), assertPreRetirementData(data));
   res.status(204).end();
+});
+
+// ---- Gilt market (public DMO data, cached; not part of backups) ----
+
+app.get("/api/gilts", async (req, res) => {
+  const raw = typeof req.query.isins === "string" ? req.query.isins : "";
+  const isins = raw.split(",").filter((s) => ISIN.test(s)).slice(0, 200);
+  res.json(await loadMarket(await getPool(), isins));
+});
+
+app.post("/api/gilts/refresh", async (req, res) => {
+  const { dates } = (req.body ?? {}) as { dates?: unknown };
+  const list = Array.isArray(dates) ? dates.filter((d): d is string => typeof d === "string" && isIsoDate(d)) : [];
+  const pool = await getPool();
+  try {
+    res.json(await refreshMarket(pool, list));
+  } catch (e) {
+    // The DMO (not us) failed: offline, timed out, or a report layout we can't read.
+    throw Object.assign(e instanceof Error ? e : new Error(String(e)), { status: 502 });
+  }
 });
 
 app.get("/api/export", async (_req, res) => {

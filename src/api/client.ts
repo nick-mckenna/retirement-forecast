@@ -4,6 +4,14 @@
 import type { Scenario } from "../model/types";
 import type { ExpenseData, ExpenseMonth, ExpenseTemplates } from "../model/expenseTypes";
 import type { PreRetirementData } from "../model/preRetirementTypes";
+import type { GiltMarket } from "../gilts/types";
+
+/** What a gilt-market refresh did (see server/dmoClient.ts). */
+export interface GiltRefreshResult {
+  asOf: string | null;
+  fetched: string[];
+  errors: string[];
+}
 
 export const BACKUP_FORMAT = "retirement-forecast-backup";
 
@@ -77,4 +85,10 @@ export const api = {
   preRetirement: () => http<PreRetirementData>("/preretirement"),
   savePreRetirement: (data: PreRetirementData, keepalive = false) =>
     http<void>("/preretirement", { method: "PUT", body: JSON.stringify({ data }), keepalive }),
+  /** The cached gilt market, with price history for the given (held) ISINs. */
+  gilts: (isins: string[]) => http<GiltMarket>(`/gilts?isins=${encodeURIComponent(isins.join(","))}`),
+  /** Ask the server to fetch from the DMO whatever it hasn't cached: the latest prices and any
+   *  of `dates` (past valuation dates). */
+  refreshGilts: (dates: string[]) =>
+    http<GiltRefreshResult>("/gilts/refresh", { method: "POST", body: JSON.stringify({ dates }) }),
 };

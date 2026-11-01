@@ -28,6 +28,9 @@ import type {
 import { annualToMonthly } from "../model/rates";
 import { clampDay, createMonthFromTemplates, daysInMonth, monthKeysBetween, monthLabel } from "../expenses/calc";
 import { PREMIUM_BOND_LIMIT, RELIEF_AT_SOURCE_GROSS_UP } from "../tax/allowanceLimits";
+import { buildPricing, type GiltPricing } from "../gilts/pricing";
+import { addDays, monthEnd } from "../gilts/schedule";
+import { giltFlowsBetween, lotsByAccount, lotsValue } from "./giltAccounts";
 
 /** One account's growth, given what it holds once the period's money has moved (`held`):
  *  Premium Bond prizes are only reinvested up to the holding limit (NS&I pays the rest out, to
@@ -67,6 +70,9 @@ export interface ProjectionMonth {
   byAccount: Record<string, AccountMonthCell>;
   /** Cost basis at the month end, per GIA account id (for the CGT handoff). */
   basis: Record<string, number>;
+  /** Cash at the month end, per gilt account holding real gilts (the rest of its balance is
+   *  the gilts at market value). */
+  giltCash: Record<string, number>;
   /** Σ end balances across all accounts. */
   total: number;
 }
@@ -85,6 +91,8 @@ export interface PreRetirementResult {
   assumedMonths: ExpenseMonth[];
   /** accountId strings on tagged lines that match no registry account (treated as untagged). */
   unknownAccountIds: string[];
+  /** How real gilts were priced (par when no market was given) — `sampleAtDate` reuses it. */
+  pricing: GiltPricing;
 }
 
 /** Annual growth rate per account kind, derived from a scenario's Rates. */
@@ -97,8 +105,9 @@ export function ratesForKinds(rates: Rates): KindRates {
     gia: rates.investmentGrowth,
     savings: rates.savingsInterest,
     premiumBonds: rates.premiumBondRate,
-    // Held at nominal value before retirement: coupons aren't modelled here (record them as
-    // untagged income), and the price is assumed to sit at par.
+    // A gilt account held as a single figure stays at nominal value (coupons recorded as
+    // untagged income). One holding real gilts is valued at market prices instead, its coupons
+    // and redemptions modelled (giltAccounts.ts) - its cash earns nothing.
     gilts: 0,
   };
 }
@@ -204,8 +213,10 @@ export function projectAccounts(
   rates: KindRates,
   endMonth: string,
   templates?: ExpenseTemplates,
+  giltPricing?: GiltPricing,
 ): PreRetirementResult {
   const warnings: string[] = [];
+  const pricing = giltPricing ?? buildPricing(null);
 
   const { accounts, duplicates } = dedupeAccounts(data.accounts);
   for (const a of duplicates) warnings.push(`Duplicate account id "${a.id}" — ignoring "${a.name}".`);
@@ -223,7 +234,7 @@ export function projectAccounts(
   }
 
   if (endMonth < data.openingMonth) {
-    return { accounts, months: [], warnings, missingMonthKeys: [], assumedMonths: [], unknownAccountIds };
+    return { accounts, months: [], warnings, missingMonthKeys: [], assumedMonths: [], unknownAccountIds, pricing };
   }
 
   // Tagged flows before the opening month are already inside the opening
@@ -271,14 +282,51 @@ export function projectAccounts(
     );
   }
 
+  // Real gilts: accounts holding lots are their cash plus the lots at market value.
+  const lotMap = lotsByAccount(data, accounts);
+  for (const l of data.giltLots) {
+    if (lotMap.get(l.accountId)?.includes(l)) continue;
+    const acc = byId.get(l.accountId);
+    warnings.push(
+      acc
+        ? `Gilt holding ${l.name} is in ${acc.name}, which isn't a gilts account — ignored.`
+        : `Gilt holding ${l.name} is in an unknown/deleted account — ignored.`,
+    );
+  }
+  const openingEve = addDays(`${data.openingMonth}-01`, -1);
+  if (lotMap.size > 0) {
+    if (!pricing.hasMarket) {
+      warnings.push("Gilt holdings are valued at par: there are no DMO prices yet (refresh the gilt market).");
+    } else {
+      const unknown = [...new Set(data.giltLots.filter((l) => !pricing.knows(l.isin)).map((l) => l.name))];
+      if (unknown.length > 0) {
+        warnings.push(`No DMO price for ${unknown.join(", ")} — valued on the fitted yield curve.`);
+      }
+    }
+    for (const [id, lots] of lotMap) {
+      const a = byId.get(id)!;
+      const held = lotsValue(lots, openingEve, pricing);
+      if (held > 0 && a.openingBalance > 0 && Math.abs(a.openingBalance - held) <= 0.02 * held) {
+        warnings.push(
+          `${a.name}'s opening balance looks like the value of its gilts — with gilt holdings recorded it is the ` +
+            `account's cash only (the gilts are counted separately).`,
+        );
+      }
+    }
+  }
+
   const balances = new Map<string, number>();
   const basis = new Map<string, number>();
+  const giltCash = new Map<string, number>();
   for (const a of accounts) {
-    balances.set(a.id, a.openingBalance);
+    const lots = lotMap.get(a.id);
+    balances.set(a.id, a.openingBalance + (lots ? lotsValue(lots, openingEve, pricing) : 0));
+    if (lots) giltCash.set(a.id, a.openingBalance);
     if (a.kind === "gia") {
       basis.set(a.id, a.openingBalance * (1 - clamp01(a.openingGainFraction ?? 0)));
     }
   }
+  const negativeCash = new Map<string, string>();
 
   const months: ProjectionMonth[] = [];
   // First month and lowest value of any account driven below zero (withdrawals exceeding it).
@@ -301,8 +349,45 @@ export function projectAccounts(
       );
       const record = overrideMap.get(`${a.id}:${key}`);
 
+      const lots = lotMap.get(a.id);
       let cell: AccountMonthCell;
-      if (record == null) {
+      if (lots) {
+        // Cash moves by the tagged flows, purchases, and (unless paid out) coupons and
+        // redemptions; the lots are revalued at the month end. Growth is what's left: price
+        // movement and accrued interest. From a record, its cash is its value less the lots.
+        const external = a.giltPayout === "external";
+        let cash: number;
+        let fromIso: string;
+        let contributions: number;
+        let withdrawals: number;
+        if (record == null) {
+          cash = giltCash.get(a.id)!;
+          fromIso = addDays(`${key}-01`, -1);
+          contributions = monthContributions;
+          withdrawals = monthWithdrawals;
+        } else {
+          const day = clampDay(record.day, key);
+          fromIso = `${key}-${String(day).padStart(2, "0")}`;
+          cash = record.value - lotsValue(lots, fromIso, pricing);
+          contributions = (f?.contributionsByDay ?? []).filter((c) => (c.day ?? 1) > day).reduce((s, c) => s + c.amount, 0);
+          withdrawals = 0;
+        }
+        const endIso = monthEnd(key);
+        const gf = giltFlowsBetween(lots, fromIso, endIso, pricing);
+        cash += contributions - withdrawals - gf.purchases + (external ? 0 : gf.income);
+        const out = withdrawals + (external ? gf.income : 0);
+        const end = cash + lotsValue(lots, endIso, pricing);
+        cell = {
+          start,
+          growth: end - (record?.value ?? start) - contributions + out,
+          contributions,
+          withdrawals: out,
+          end,
+          recorded: record ?? null,
+        };
+        giltCash.set(a.id, cash);
+        if (cash < -0.5 && !negativeCash.has(a.id)) negativeCash.set(a.id, key);
+      } else if (record == null) {
         cell = {
           start,
           growth: monthGrowth,
@@ -355,7 +440,7 @@ export function projectAccounts(
         basis.set(a.id, Math.max(0, b));
       }
 
-      if (a.kind === "gilts" && a.maturityYear != null && a.maturityYear <= Number(endMonth.slice(0, 4)) && key === range[0]) {
+      if (!lots && a.kind === "gilts" && a.maturityYear != null && a.maturityYear <= Number(endMonth.slice(0, 4)) && key === range[0]) {
         warnings.push(
           `${a.name} matures in ${a.maturityYear}, by the end of the projection — it is still held at ` +
             `nominal value; record the redemption (a balance of 0, and the cash where it went) when it happens.`,
@@ -371,7 +456,14 @@ export function projectAccounts(
         else n.low = Math.min(n.low, cell.end);
       }
     }
-    months.push({ key, byAccount, basis: Object.fromEntries(basis), total });
+    months.push({ key, byAccount, basis: Object.fromEntries(basis), giltCash: Object.fromEntries(giltCash), total });
+  }
+
+  for (const [id, key] of negativeCash) {
+    warnings.push(
+      `${byId.get(id)!.name}'s cash goes below zero in ${monthLabel(key)} — its gilt purchases cost more than the ` +
+        `cash in the account (tag the money paid in, or check the opening cash).`,
+    );
   }
 
   for (const a of accounts) {
@@ -383,7 +475,7 @@ export function projectAccounts(
     );
   }
 
-  return { accounts, months, warnings, missingMonthKeys, assumedMonths, unknownAccountIds };
+  return { accounts, months, warnings, missingMonthKeys, assumedMonths, unknownAccountIds, pricing };
 }
 
 /** The account's most recent actual-balance record — the one the Accounts UI
@@ -466,10 +558,12 @@ export function balancesAtDate(
 }
 
 /** A projection sampled at the end of one day: each account's balance and, for GIA
- *  accounts, its cost basis (for the CGT handoff). */
+ *  accounts, its cost basis (for the CGT handoff); for gilt accounts holding real gilts, the
+ *  cash part of the balance. */
 export interface DateSample {
   balances: Record<string, number>;
   basis: Record<string, number>;
+  giltCash: Record<string, number>;
 }
 
 /** `balancesAtDate` plus the GIA cost basis on that day. The basis follows the same
@@ -486,28 +580,32 @@ export function sampleAtDate(
 ): DateSample {
   const balances: Record<string, number> = {};
   const basis: Record<string, number> = {};
+  const giltCash: Record<string, number> = {};
   const first = result.months[0];
   const last = result.months[result.months.length - 1];
-  if (!first || !last) return { balances, basis };
+  if (!first || !last) return { balances, basis, giltCash };
+  const lotMap = lotsByAccount(data, result.accounts);
   const openingBasis = (a: InvestmentAccount) => a.openingBalance * (1 - clamp01(a.openingGainFraction ?? 0));
   const monthKey = dateIso.slice(0, 7);
   if (monthKey < first.key) {
     for (const a of result.accounts) {
       balances[a.id] = first.byAccount[a.id].start;
       if (a.kind === "gia") basis[a.id] = openingBasis(a);
+      if (lotMap.has(a.id)) giltCash[a.id] = a.openingBalance;
     }
-    return { balances, basis };
+    return { balances, basis, giltCash };
   }
   if (monthKey > last.key) {
     for (const a of result.accounts) {
       balances[a.id] = last.byAccount[a.id].end;
       if (a.kind === "gia") basis[a.id] = last.basis[a.id] ?? 0;
+      if (lotMap.has(a.id)) giltCash[a.id] = last.giltCash[a.id] ?? 0;
     }
-    return { balances, basis };
+    return { balances, basis, giltCash };
   }
   const monthIdx = result.months.findIndex((m) => m.key === monthKey);
   const month = result.months[monthIdx];
-  if (!month) return { balances, basis }; // unreachable: every month in the range is emitted
+  if (!month) return { balances, basis, giltCash }; // unreachable: every month in the range is emitted
   const dim = daysInMonth(monthKey);
   const day = clampDay(Number(dateIso.slice(8, 10)) || null, monthKey);
   // The month the projection actually used: the tracked one, else what it assumed.
@@ -544,6 +642,20 @@ export function sampleAtDate(
     // Income lines carry no due day: they move at the start of the month, so
     // they are gone by any sampled day and inside any anchor.
     const withdrawals = anchor ? 0 : (f?.withdrawals ?? 0);
+    const lots = lotMap.get(a.id);
+    if (lots) {
+      // Mirrors projectAccounts: cash from the anchor (a record less the lots, or last month's
+      // cash), moved by the flows up to the day; the lots at that day's market value.
+      const dayIso = `${monthKey}-${String(day).padStart(2, "0")}`;
+      const fromIso = anchor ? `${monthKey}-${String(anchor.day).padStart(2, "0")}` : addDays(`${monthKey}-01`, -1);
+      const prevCash = monthIdx > 0 ? (result.months[monthIdx - 1].giltCash[a.id] ?? 0) : a.openingBalance;
+      let cash = anchor ? anchor.value - lotsValue(lots, fromIso, result.pricing) : prevCash;
+      const gf = giltFlowsBetween(lots, fromIso, dayIso, result.pricing);
+      cash += contributions - withdrawals - gf.purchases + (a.giltPayout === "external" ? 0 : gf.income);
+      giltCash[a.id] = cash;
+      balances[a.id] = cash + lotsValue(lots, dayIso, result.pricing);
+      continue;
+    }
     const growth = cappedGrowth(
       a,
       base + contributions - withdrawals,
@@ -568,5 +680,5 @@ export function sampleAtDate(
       }
     }
   }
-  return { balances, basis };
+  return { balances, basis, giltCash };
 }

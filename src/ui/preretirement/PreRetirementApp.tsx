@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { usePreRetirementStore } from "../../store/preRetirementStore";
 import { useExpenseStore } from "../../store/expenseStore";
 import { useStore } from "../../store/scenarioStore";
+import { useGiltMarketStore } from "../../store/giltMarketStore";
+import { buildPricing } from "../../gilts/pricing";
 import { latestActualTotal, projectAccounts, ratesForKinds } from "../../preretirement/project";
 import { allowanceWarnings } from "../../preretirement/allowances";
 import { handoffMonthKey } from "../../preretirement/link";
@@ -34,6 +36,7 @@ export function PreRetirementApp() {
   const expenseTemplates = useExpenseStore((st) => st.data.templates);
   const addMissingMonths = useExpenseStore((st) => st.addMissingMonths);
   const scenario = useStore((st) => st.scenarios.find((x) => x.id === st.activeId)!);
+  const giltMarket = useGiltMarketStore((st) => st.market);
   const [tab, setTab] = useState<Tab>("forecast");
 
   const todayKey = monthKeyOf(new Date());
@@ -43,8 +46,9 @@ export function PreRetirementApp() {
   const endMonth = handoff ?? (todayKey > data.openingMonth ? todayKey : data.openingMonth);
   const kindRates = ratesForKinds(scenario.rates);
   const result = useMemo(
-    () => projectAccounts(data, expenseMonths, ratesForKinds(scenario.rates), endMonth, expenseTemplates),
-    [data, expenseMonths, scenario.rates, endMonth, expenseTemplates],
+    () =>
+      projectAccounts(data, expenseMonths, ratesForKinds(scenario.rates), endMonth, expenseTemplates, buildPricing(giltMarket)),
+    [data, expenseMonths, scenario.rates, endMonth, expenseTemplates, giltMarket],
   );
 
   const allowance = useMemo(() => allowanceWarnings(result, expenseMonths, scenario), [result, expenseMonths, scenario]);
@@ -135,11 +139,15 @@ export function PreRetirementApp() {
               <p>
                 Each account starts at its opening balance (start of {monthLabel(data.openingMonth)})
                 and is walked forward month by month: growth first — ISA / Pension / GIA{" "}
-                {pct(scenario.rates.investmentGrowth)}, Savings and Premium Bonds{" "}
-                {pct(scenario.rates.savingsInterest)}, Gilts {pct(scenario.rates.giltCoupon)} a year,
-                applied at the equivalent monthly rate — then the expense-tracker lines tagged to
-                that account (expenses in, income out, using the expected amount rather than what is
-                marked paid).
+                {pct(scenario.rates.investmentGrowth)}, Savings {pct(scenario.rates.savingsInterest)},
+                Premium Bonds {pct(scenario.rates.premiumBondRate)} a year, applied at the equivalent
+                monthly rate — then the expense-tracker lines tagged to that account (expenses in,
+                income out, using the expected amount rather than what is marked paid).
+              </p>
+              <p>
+                A gilts account recorded as a single figure stays at that value. One holding real
+                gilts is its cash plus the gilts at DMO prices (modelled forward from today's prices),
+                with their coupons and redemptions on their real dates.
               </p>
               <p>
                 Wherever you have recorded an actual balance, the projection re-anchors to it and

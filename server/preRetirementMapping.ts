@@ -9,13 +9,22 @@
 import type { PersonId } from "../src/model/types";
 import type {
   BalanceOverride,
+  GiltPayout,
   InvestmentAccount,
   PreAccountKind,
   PreRetirementData,
 } from "../src/model/preRetirementTypes";
+import type { GiltLot } from "../src/gilts/types";
 
 type SqlNum = number | string;
 type SqlBool = boolean | number | string;
+/** DATE columns come back from the driver as Date objects (UTC midnight). */
+type SqlDate = Date | string;
+
+function iso(v: SqlDate): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
 
 function bool(v: SqlBool): boolean {
   return v === true || v === 1 || v === "1" || v === "true";
@@ -38,6 +47,8 @@ export interface PreRetirementAccountRow {
   reliefAtSource: SqlBool;
   externalMonthlyContribution: SqlNum;
   maturityYear: SqlNum | null;
+  /** Gilt accounts: 'account' or 'external' (column default 'account' for older rows). */
+  giltPayout: string;
   sortOrder: number;
 }
 
@@ -51,10 +62,24 @@ export interface PreRetirementOverrideRow {
   basis: SqlNum | null;
 }
 
+export interface PreRetirementGiltLotRow {
+  lotId: string;
+  accountId: string;
+  isin: string;
+  name: string;
+  couponRate: SqlNum;
+  redemptionDate: SqlDate;
+  nominal: SqlNum;
+  purchaseDate: SqlDate;
+  purchaseCleanPrice: SqlNum | null;
+  sortOrder: number;
+}
+
 export interface PreRetirementRows {
   state: PreRetirementStateRow;
   accounts: PreRetirementAccountRow[];
   overrides: PreRetirementOverrideRow[];
+  giltLots: PreRetirementGiltLotRow[];
 }
 
 function num(v: SqlNum): number {
@@ -79,6 +104,7 @@ export function preRetirementToRows(d: PreRetirementData): PreRetirementRows {
         reliefAtSource: a.reliefAtSource,
         externalMonthlyContribution: a.externalMonthlyContribution,
         maturityYear: a.maturityYear,
+        giltPayout: a.giltPayout,
         sortOrder: i,
       }),
     ),
@@ -89,6 +115,20 @@ export function preRetirementToRows(d: PreRetirementData): PreRetirementRows {
         dayOfMonth: o.day,
         value: o.value,
         basis: o.basis,
+      }),
+    ),
+    giltLots: d.giltLots.map(
+      (l, i): PreRetirementGiltLotRow => ({
+        lotId: l.id,
+        accountId: l.accountId,
+        isin: l.isin,
+        name: l.name,
+        couponRate: l.couponRate,
+        redemptionDate: l.redemptionDate,
+        nominal: l.nominal,
+        purchaseDate: l.purchaseDate,
+        purchaseCleanPrice: l.purchaseCleanPrice,
+        sortOrder: i,
       }),
     ),
   };
@@ -108,6 +148,7 @@ export function rowsToPreRetirement(r: PreRetirementRows): PreRetirementData {
         reliefAtSource: row.reliefAtSource == null ? false : bool(row.reliefAtSource),
         externalMonthlyContribution: row.externalMonthlyContribution == null ? 0 : num(row.externalMonthlyContribution),
         maturityYear: numOrNull(row.maturityYear),
+        giltPayout: (row.giltPayout === "external" ? "external" : "account") as GiltPayout,
       }),
     );
   const overrides = [...r.overrides]
@@ -127,5 +168,20 @@ export function rowsToPreRetirement(r: PreRetirementRows): PreRetirementData {
         basis: numOrNull(row.basis),
       }),
     );
-  return { openingMonth: r.state.openingMonth, accounts, overrides };
+  const giltLots = [...(r.giltLots ?? [])]
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map(
+      (row): GiltLot => ({
+        id: row.lotId,
+        accountId: row.accountId,
+        isin: row.isin,
+        name: row.name,
+        couponRate: num(row.couponRate),
+        redemptionDate: iso(row.redemptionDate),
+        nominal: num(row.nominal),
+        purchaseDate: iso(row.purchaseDate),
+        purchaseCleanPrice: numOrNull(row.purchaseCleanPrice),
+      }),
+    );
+  return { openingMonth: r.state.openingMonth, accounts, overrides, giltLots };
 }

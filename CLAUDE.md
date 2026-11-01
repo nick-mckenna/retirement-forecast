@@ -47,8 +47,10 @@ over three modules:
    account month by month so it never drops below zero.
 
 Everything is persisted to a local SQL Server database (see "Persistence" below); the browser's
-`localStorage` is only a cache/offline fallback. The only network I/O is the app ↔ local API on
-127.0.0.1. The `.xlsx` files are **gitignored personal data** — they may sit in the working copy
+`localStorage` is only a cache/offline fallback. Network I/O is the app ↔ local API on 127.0.0.1,
+plus one outbound call: the local server fetches the UK Debt Management Office's **public** gilt
+reports from www.dmo.gov.uk (plain HTTPS GETs, nothing about the user is sent — see "Gilt market"
+below). The `.xlsx` files are **gitignored personal data** — they may sit in the working copy
 as references but are never committed, never build/test inputs, and a fresh clone won't have them.
 All committed tests and defaults use synthetic figures only (see "Never commit sensitive data"
 under Conventions).
@@ -65,7 +67,7 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
 ```
 
 - **`simulate(scenario)` is the heart.** It is a pure, deterministic function: same Scenario in →
-  same `SimResult` out. The UI does not call it directly — it calls **`runForecast(scenario)`**
+  same `SimResult` out. The UI does not call it directly — it calls **`runForecast(scenario, ctx)`**
   (`src/strategy/optimiser.ts`) inside a single `useMemo` in `src/ui/RetirementApp.tsx`
   (on the scenario resolved by `resolveScenarioForRun`, see "Handoff" below). `runForecast` calls
   `simulate` once for `heuristic`/`annual` tax modes; for `lifetime` mode it fully simulates ~12
@@ -170,11 +172,14 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
 
 - **Accounts are a user-editable registry of real accounts**
   (`src/model/preRetirementTypes.ts`): `InvestmentAccount { id, name, owner, kind,
-  openingBalance, openingGainFraction, reliefAtSource, externalMonthlyContribution, maturityYear }`,
+  openingBalance, openingGainFraction, reliefAtSource, externalMonthlyContribution, maturityYear,
+  giltPayout }`,
   e.g. "Nick ISA", "Tracy Pension". `reliefAtSource` (pensions) grosses tagged contributions up by
   25% (`RELIEF_AT_SOURCE_GROSS_UP`, `src/tax/allowanceLimits.ts`); `externalMonthlyContribution` is
   money from outside the joint account (employer, salary sacrifice), gross, due on each month's last
-  day; `maturityYear` (gilts) only drives a matures-before-retirement warning.
+  day; `maturityYear` (gilts held as a single figure) only drives a matures-before-retirement
+  warning; `giltPayout` (gilts accounts holding real gilts) says whether coupons and redemptions stay
+  in the account as cash (`"account"`) or are paid out (`"external"`).
   The `kind` (`PreAccountKind`: isa | pension | gia | savings |
   **premiumBonds** | gilts) is the grouping vocabulary shared by all three modules — it picks the
   growth rate and the retirement pot at handoff. `defaultPreRetirementData()` ships a generic
@@ -182,7 +187,7 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   ships a generic standing-order list) — the user renames/extends it to match their real
   accounts, which live only in the local DB. `emptyPreRetirementData()` is what the server
   reports before anything is saved. Expense/income lines are tagged with an account's `id`.
-  `PreRetirementData = { openingMonth, accounts, overrides }`: opening balances are as of the
+  `PreRetirementData = { openingMonth, accounts, overrides, giltLots }`: opening balances are as of the
   START of `openingMonth`; a `BalanceOverride { accountId, monthKey, day, value, basis }` records the
   **actual** balance at the end of `day` in that month (`day` null = end of the month) and
   re-anchors the projection there — the rest of the month's growth is pro-rated by calendar days
@@ -198,8 +203,15 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   withdrawal OUT, always the expected `amount`, never `paid`), then any override. Growth rates
   come from the active scenario's `Rates` via `ratesForKinds` (isa/pension/gia →
   `investmentGrowth`, savings → `savingsInterest`, premiumBonds → `premiumBondRate`, with prizes reinvested only up to
-  the £50,000 limit (`cappedGrowth`, judged on the holding after the period’s deposits); gilts are held
-  at nominal, rate 0 — coupons aren't modelled before retirement). It tracks
+  the £50,000 limit (`cappedGrowth`, judged on the holding after the period’s deposits); a gilts
+  account held as a single figure stays at nominal, rate 0). A gilts account with **real gilt
+  holdings** (`giltLots`, see "Gilt market") is projected by `src/preretirement/giltAccounts.ts`
+  instead: its `openingBalance` is its **cash**, lots bought before `openingMonth` are held from the
+  start, a purchase costs nominal × (clean + accrued)/100, coupons go to lots held at ex-dividend,
+  and the month end is cash + lots at DMO sale price plus accrued; growth is the residual, so the
+  cell invariant holds. A recorded balance is the platform **total** — its cash is the value less
+  the lots. `ProjectionMonth.giltCash` / `DateSample.giltCash` carry the cash part, and the result
+  keeps the `pricing` it used (par without a market) so `sampleAtDate` agrees. It tracks
   each person's GIA cost basis for the CGT handoff (in a recorded month, withdrawals take basis out
   against the recorded value; the handoff's `giaGainFraction` goes negative for an unrealised loss) and reports `missingMonthKeys` /
   `unknownAccountIds` as warnings. Given the expense `templates` (the UI always passes them), a month
@@ -217,13 +229,16 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
   InputsPanel) makes `resolveScenarioForRun` replace the scenario's starting balances with the
   projection (premiumBonds keep their own pot; gilts flow; `giaGainFraction`
   computed from the tracked basis) before `RetirementApp` calls `runForecast` — the engine is
-  never modified. Falls back to manual balances (with a warning) when the projection can't cover
+  never modified. A gilts account holding real gilts hands its cash over as savings and its lots as
+  themselves: `resolveScenarioForRun` also returns `ctx: SimContext` (`giltMarket`, and
+  `openingGilts` aggregated by owner and ISIN, with the accrued-interest credit of lots not yet
+  past their first coupon), which `runForecast(scenario, ctx)` passes to every `simulate`. Falls back to manual balances (with a warning) when the projection can't cover
   the handoff month.
 - **Store** `src/store/preRetirementStore.ts`: mirrors the others (localStorage cache
   `retirement-forecast:preretirement`, single 400ms debounced whole-document save, `pagehide`
   flush, empty-DB seeding — seeding treats an all-zero document as unsaved).
-- **Persistence**: tables `PreRetirementState` (singleton), `PreRetirementPot`,
-  `PreRetirementOverride` in `server/db.ts`; pure `server/preRetirementMapping.ts` guarded by
+- **Persistence**: tables `PreRetirementState` (singleton), `PreRetirementAccount`,
+  `PreRetirementAccountOverride`, `PreRetirementGiltLot` in `server/db.ts`; pure `server/preRetirementMapping.ts` guarded by
   `src/__tests__/preRetirementMapping.test.ts`; repo `server/preRetirementRepo.ts`; routes
   `GET/PUT /api/preretirement` (whole-document). The backup envelope has an optional
   `preRetirement` field — old backups leave the module untouched. Engine tests live in
@@ -231,6 +246,51 @@ real accounts — scenario duplicate/delete must never fork or destroy it).
 - The expense store's `addMissingMonths(fromKey, untilKey)` (`fillMissingMonths`) creates every
   untracked month in the range — gaps and months before the first included — carrying start
   balances forward; the module's warn-banner offers it when months are missing.
+
+## Gilt market (DMO)
+
+Real UK gilts, from the Debt Management Office's public reports, feed both the user's gilt accounts
+and the retirement engine. Conventional gilts only: index-linked ones are listed but never held or
+bought.
+
+- **Data**: `src/gilts/types.ts` — `GiltInstrument` (ISIN, name, coupon, redemption date, flags),
+  `GiltPrice` (a trade date's buy/sell clean and dirty prices), `GiltMarket { asOf, instruments,
+  prices }`, `GiltLot` (a purchase held in a gilts account — **self-contained**: name, coupon and
+  redemption date are stored with it, so it works after redemption and without any market data),
+  `OpeningGilt`, `SimContext`.
+- **Feed** (server only — browsers can't fetch it cross-origin): `server/dmoClient.ts` GETs
+  `GetDataExport?reportCode=D1A` (gilts in issue, parameter `COBDate=dd/mm/yyyy`) and `D10B`
+  (purchase & sale service prices, parameter **`Trade Date`**). Only the legacy `.xls` export is
+  usable (the CSV one has no delimiters), read by the hand-rolled, Node-free `server/xls.ts` (OLE2 +
+  BIFF8; tested with a synthetic builder in `src/__tests__/helpers/xlsBuilder.ts` — no downloaded
+  file is committed); `server/dmoParse.ts` finds columns by header text and throws if the layout
+  changes. A date with no data returns "Unable to fulfil the report request" → step back a
+  business day. Tables `GiltInstrument` and `GiltPrice` (mapping `server/giltMarketMapping.ts`,
+  repo `server/giltMarketRepo.ts`); routes `GET /api/gilts?isins=` (all instruments, the latest
+  prices, history only for held ISINs) and `POST /api/gilts/refresh {dates}`. Public, re-fetchable
+  data: **not** in backups. `npx tsx scripts/dmo-smoke.ts` is a live check (not in `npm test`).
+- **Client** `src/store/giltMarketStore.ts`: localStorage cache `retirement-forecast:gilts`;
+  auto-refreshes on start when older than the previous business day (at most hourly), fetches the
+  past prices held gilts need (`neededPriceDates` / `missingPriceDates`, `src/gilts/market.ts`), and
+  the `GiltMarketStatus` Refresh button. Nothing is ever saved from the client.
+- **Maths** (pure): `src/gilts/schedule.ts` — coupons half-yearly on the redemption day (clamped to
+  the month), ex-dividend 7 business days before (weekends only), actual/actual accrued interest,
+  `fundsYear(redemption)` = the first tax year starting on or after it. `src/gilts/pricing.ts` —
+  the DMO's semi-annual price↔yield formula (settlement = trade date); `buildPricing(market,
+  shift)` (memoised per market and shift) fits a GRY curve to near-par conventionals and keeps
+  each gilt's spread to it per side, so today's prices are reproduced and a future price is the
+  curve at the remaining term + spread + shift (a static curve, rolled down). Recorded DMO prices
+  win for dates within 10 days after them; no market → par. Valuation is the **sale clean price
+  plus our own accrued** (never DMO's dirty, which is for T+3 settlement).
+- **Engine**: `GiltHolding` has optional `isin`, `redemptionIso`, `aisCredit`; without them it is
+  the engine's own par gilt, unchanged (no context ⇒ identical results — `realGilts.test.ts`). For
+  a real gilt `maturityYear` is its `fundsYear`, so the ladder's rung accounting is untouched; it
+  redeems and pays coupons on its real dates (`realGiltEvents`, before each month's draw), is sold
+  by the draw at the sale price with the accrued interest taxable (a simple Accrued Income Scheme:
+  accrued paid on purchase relieves the first coupon; the £5,000 de-minimis is ignored), and is
+  valued at market in the ledger's gilts column — a "Gilt revaluation" row before each balance
+  books the difference, so the ledger still reconciles. At year end the buffer counts a real gilt
+  funding a year inside the buffer window at nominal and a longer one at market value.
 
 ## Monthly expense tracker
 

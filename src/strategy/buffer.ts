@@ -1,6 +1,5 @@
 import type { StrategyConfig } from "../model/types";
-import type { SimState } from "../engine/state";
-import { giltValue } from "../engine/state";
+import type { GiltHolding, SimState } from "../engine/state";
 
 /** The income the buffer has to fund in a tax year: the income target less the State Pension
  *  paid that year (which arrives as cash anyway), never below zero. */
@@ -30,8 +29,11 @@ export function bufferTarget(need: NeedFn, strategy: StrategyConfig, nextTaxYear
   return bufferWindow(strategy, nextTaxYearStart).reduce((s, { year, weight }) => s + need(year) * weight, 0);
 }
 
-export function currentBuffer(state: SimState): number {
+/** Cash, Premium Bonds and gilts. Gilts count at their redemption value (nominal) by default;
+ *  `value` lets the engine count a long-dated real gilt — one maturing beyond the buffer
+ *  window — at its market value instead. */
+export function currentBuffer(state: SimState, value: (g: GiltHolding) => number = (g) => g.nominal): number {
   const { nick, tracy } = state.balances;
   const cash = nick.savings + nick.premiumBonds + tracy.savings + tracy.premiumBonds;
-  return cash + giltValue(state);
+  return cash + state.gilts.reduce((s, g) => s + value(g), 0);
 }

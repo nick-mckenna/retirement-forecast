@@ -1,5 +1,6 @@
 import type { Scenario, StrategyConfig } from "../model/types";
 import { simulate, type SimResult } from "../engine/simulate";
+import type { SimContext } from "../gilts/types";
 
 /** One candidate the lifetime search tried. */
 export interface SearchCandidate {
@@ -38,11 +39,11 @@ const REFINE_STEPS = [-0.1, -0.05, 0.05, 0.1];
  * optimiser with proactive pension crystallisation filled to a range of basic-band fractions,
  * refined around the best — and returns the one with the lowest total lifetime tax (the
  * objective is lifetime tax, as chosen; deferred tax on pensions left at the horizon isn't in
- * it). For "heuristic"/"annual" it just simulates once.
+ * it). For "heuristic"/"annual" it just simulates once. `ctx` goes to every simulate run.
  */
-export function runForecast(scenario: Scenario): ForecastOutcome {
+export function runForecast(scenario: Scenario, ctx: SimContext = {}): ForecastOutcome {
   if (scenario.strategy.taxMode !== "lifetime") {
-    const result = simulate(scenario);
+    const result = simulate(scenario, ctx);
     return { result, totalTax: totalTaxOf(result) };
   }
 
@@ -58,7 +59,7 @@ export function runForecast(scenario: Scenario): ForecastOutcome {
       taxMode: strategy === "heuristic" ? "heuristic" : "lifetime",
       lifetimeFillFraction: fraction ?? undefined,
     };
-    const result = simulate({ ...scenario, strategy: config });
+    const result = simulate({ ...scenario, strategy: config }, ctx);
     const candidate: SearchCandidate = { strategy, fraction, totalTax: totalTaxOf(result) };
     search.push(candidate);
     if (!best || candidate.totalTax < best.candidate.totalTax - 0.005) best = { candidate, result };

@@ -230,6 +230,7 @@ function accountsFromLegacyPots(d: LegacyPreRetirementData): {
         reliefAtSource: false,
         externalMonthlyContribution: 0,
         maturityYear: null,
+        giltPayout: "account",
       };
       accounts.set(id, acc);
     }
@@ -264,6 +265,7 @@ export function migratePreRetirementData(d: PreRetirementData): PreRetirementDat
       openingMonth: d.openingMonth ?? empty.openingMonth,
       accounts: upgraded.accounts,
       overrides: upgraded.overrides,
+      giltLots: [],
     };
   }
   return {
@@ -275,7 +277,9 @@ export function migratePreRetirementData(d: PreRetirementData): PreRetirementDat
       reliefAtSource: a.reliefAtSource ?? false,
       externalMonthlyContribution: a.externalMonthlyContribution ?? 0,
       maturityYear: a.maturityYear ?? null,
+      giltPayout: a.giltPayout ?? "account",
     })),
     overrides: (d.overrides ?? []).map((o) => ({ ...o, day: o.day ?? null, basis: o.basis ?? null })),
+    giltLots: (d.giltLots ?? []).map((l) => ({ ...l, purchaseCleanPrice: l.purchaseCleanPrice ?? null })),
   };
 }

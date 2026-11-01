@@ -24,7 +24,9 @@ export function GiltsView({ result, scenario }: { result: SimResult; scenario: S
       <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
         Each rung is bought at the end of a tax year to hold part of the cash buffer as gilts, and
         redeems at par on its maturity date (feeding cash back into the buffer). Gilt capital gains are
-        CGT-exempt; only the coupon is taxable.
+        CGT-exempt; only the coupon is taxable. Real gilts (with an ISIN) were handed over from the
+        Pre-retirement module: they pay their real half-yearly coupons, redeem on their real dates and
+        are valued at DMO prices, modelled forward.
       </p>
       <div style={{ overflow: "auto", maxHeight: "68vh" }}>
         <table className="sticky-first">
@@ -32,10 +34,11 @@ export function GiltsView({ result, scenario }: { result: SimResult; scenario: S
             <tr>
               <th className="label">Purchase date</th>
               <th className="label">Holder</th>
-              <th className="label">Rung</th>
+              <th className="label">Gilt</th>
+              <th className="label">ISIN</th>
               <th>Nominal</th>
               <th>Coupon</th>
-              <th className="label">Target maturity date</th>
+              <th className="label">Maturity date</th>
               <th className="label">Source</th>
             </tr>
           </thead>
@@ -47,11 +50,12 @@ export function GiltsView({ result, scenario }: { result: SimResult; scenario: S
                   {scenario.people[g.holder].name}
                 </td>
                 <td className="label">{g.name}</td>
+                <td className="label muted">{g.isin ?? "—"}</td>
                 <td>{money(g.nominal)}</td>
                 <td>{(g.couponRate * 100).toFixed(2)}%</td>
                 <td className="label">{shortDate(g.maturityDateIso)}</td>
                 <td className="label">
-                  <span className="pill">{g.initial ? "held at start" : "ladder purchase"}</span>
+                  <span className="pill">{g.initial ? (g.isin ? "held at start (real)" : "held at start") : "ladder purchase"}</span>
                 </td>
               </tr>
             ))}

@@ -2,6 +2,7 @@ import { useDeferredValue, useMemo, useState } from "react";
 import { useStore } from "../store/scenarioStore";
 import { usePreRetirementStore } from "../store/preRetirementStore";
 import { useExpenseStore } from "../store/expenseStore";
+import { useGiltMarketStore } from "../store/giltMarketStore";
 import { resolveScenarioForRun } from "../preretirement/link";
 import { runForecast } from "../strategy/optimiser";
 import { InputsPanel } from "./InputsPanel";
@@ -34,19 +35,20 @@ export function RetirementApp() {
   const preData = usePreRetirementStore((st) => st.data);
   const expenseMonths = useExpenseStore((st) => st.data.months);
   const expenseTemplates = useExpenseStore((st) => st.data.templates);
+  const giltMarket = useGiltMarketStore((st) => st.market);
   const [tab, setTab] = useState<Tab>("dashboard");
 
-  // When the scenario is linked, its starting balances come from the
+  // When the scenario is linked, its starting balances (and any real gilts) come from the
   // pre-retirement projection; the engine itself stays untouched.
   const resolved = useMemo(
-    () => resolveScenarioForRun(stored, preData, expenseMonths, expenseTemplates),
-    [stored, preData, expenseMonths, expenseTemplates],
+    () => resolveScenarioForRun(stored, preData, expenseMonths, expenseTemplates, giltMarket),
+    [stored, preData, expenseMonths, expenseTemplates, giltMarket],
   );
   const scenario = resolved.scenario;
   // The lifetime search runs a dozen full simulations; deferring it keeps typing in the inputs
   // responsive (React shows the previous forecast until the new one is ready).
-  const deferredScenario = useDeferredValue(scenario);
-  const outcome = useMemo(() => runForecast(deferredScenario), [deferredScenario]);
+  const deferred = useDeferredValue(resolved);
+  const outcome = useMemo(() => runForecast(deferred.scenario, deferred.ctx), [deferred]);
   const result = outcome.result;
 
   const warnings = [...resolved.warnings, ...result.warnings];
