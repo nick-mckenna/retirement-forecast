@@ -88,6 +88,12 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   **gilt ladder** purchases, and finally computes income tax + CGT and posts it into the Nick/Tracy Tax
   columns. Every emitted `LedgerRow` is either a `BALANCE` snapshot or a `TRANSACTION` delta, mirroring
   the original spreadsheet's alternating structure.
+- **The refill provisions for the year's tax.** Tax is paid out of cash right after the refill, so
+  `refillAmount` sizes the sale to the fixed point T = target − buffer + tax(after selling T) — the
+  buffer lands on target *after* tax (lifetime mode re-runs it after crystallisation). Without this
+  the buffer ends every year short by the tax bill and cash can run out before the next refill.
+  `assessTax` is the one pure tax calculation used both for that estimate and for the real bill;
+  `src/__tests__/refill.test.ts` pins the buffer-at-target invariant in all three tax modes.
 - **Strategy is separated from the engine** (`src/strategy/`): `buffer.ts` (target = N years of income
   as cash+gilts), `drawdown.ts` (the tax-efficient *sell order* — a priority list of extraction steps
   per person; this is where "which investment to sell" lives), `giltLadder.ts` (rolling ladder). The

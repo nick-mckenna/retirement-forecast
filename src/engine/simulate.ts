@@ -220,6 +220,67 @@ export function simulate(scenario: Scenario): SimResult {
       tracy: mkPlan("tracy", scenario, y, statePension.tracy + accum.taxableNonSavings.tracy, p),
     });
 
+    // This year's income tax + CGT per person from the accumulators so far, plus any `extra`
+    // withdrawals not yet applied. Pure, so the year end can provision cash for the bill
+    // (including the tax its own sales create) before paying it with the same calculation.
+    const assessTax = (extra: Withdrawal[] = []): Record<PersonId, PersonTax> => {
+      const out: Record<PersonId, PersonTax> = { nick: blankTax(), tracy: blankTax() };
+      for (const id of PERSONS) {
+        let extraNonSavings = 0;
+        let extraGain = 0;
+        for (const w of extra) {
+          if (w.person !== id) continue;
+          extraNonSavings += w.taxableNonSavings;
+          extraGain += w.realisedGain;
+        }
+        const parts = {
+          nonSavings: accum.taxableNonSavings[id] + extraNonSavings + statePension[id],
+          savings: accum.savingsIncome[id],
+          dividends: accum.dividends[id],
+        };
+        const gain = accum.realisedGain[id] + extraGain;
+        const it = computeIncomeTax(parts, p);
+        const basicBandRemaining = Math.max(0, p.personalAllowance + p.basicRateBand - it.taxableTotal);
+        const cgt = computeCGT(gain, basicBandRemaining, p);
+        out[id] = {
+          incomeTax: it.tax,
+          cgt: cgt.tax,
+          total: round2(it.tax + cgt.tax),
+          taxableNonSavings: round2(parts.nonSavings),
+          savingsIncome: round2(parts.savings),
+          dividends: round2(parts.dividends),
+          realisedGain: round2(gain),
+        };
+      }
+      return out;
+    };
+    const taxDue = (extra?: Withdrawal[]): number => {
+      const t = assessTax(extra);
+      return t.nick.total + t.tracy.total;
+    };
+
+    /**
+     * How much to sell at year end so the cash + gilts buffer still reaches `target` once this
+     * year's tax has been paid out of it. The sale creates tax of its own (pension income, GIA
+     * gains), so solve T = target − buffer + tax(after selling T) by fixed-point iteration; it
+     * converges fast because each extra £1 raised costs well under £1 in tax.
+     */
+    const refillAmount = (target: number): number => {
+      const sell = (t: number): Withdrawal[] => {
+        if (t <= 1) return [];
+        const ctx = { plans: buildPlans(), config: scenario.strategy, year: y };
+        return mode === "heuristic" ? raiseCash(state, t, ctx) : raiseCashMarginal(state, t, ctx);
+      };
+      const gapBeforeSale = target - currentBuffer(state);
+      let t = gapBeforeSale + taxDue();
+      for (let k = 0; k < 50; k++) {
+        const next = gapBeforeSale + taxDue(sell(t));
+        if (Math.abs(next - t) < 0.5) return next;
+        t = next;
+      }
+      return t;
+    };
+
     /** Raise `target` cash by selling investments tax-efficiently; returns the gross raised. */
     const fundCash = (target: number, label: string, dateIso: string): number => {
       if (target <= 1) return 0;
@@ -359,13 +420,17 @@ export function simulate(scenario: Scenario): SimResult {
     if (scenario.strategy.autoStrategy) {
       const plans = buildPlans();
 
-      const shortfall = bufferTarget(income, scenario.strategy, y + 1) - currentBuffer(state);
-      if (shortfall > 1) {
+      // Refill so the buffer is back at target *after* this year's tax is paid from it —
+      // otherwise it starts every year short by the tax bill and cash can run out before
+      // the next refill.
+      const target = bufferTarget(income, scenario.strategy, y + 1);
+      const raise = refillAmount(target);
+      if (raise > 1) {
         const ctx = { plans, config: scenario.strategy, year: y };
         let planned =
           mode === "heuristic"
-            ? raiseCash(state, shortfall, ctx)
-            : raiseCashMarginal(state, shortfall, ctx);
+            ? raiseCash(state, raise, ctx)
+            : raiseCashMarginal(state, raise, ctx);
         planned = applyOverrides(planned, overrideMap, y, scenario);
         applyPlanned(planned, "Refill: sell investments", toIso(yearEnd));
       }
@@ -396,11 +461,26 @@ export function simulate(scenario: Scenario): SimResult {
           d.isa = (d.isa ?? 0) + toIsa;
           d.savings = (d.savings ?? 0) + (w.gross - toIsa);
         }
-        if (topUp.length) txRow("Pension crystallisation -> ISA", toIso(yearEnd), deltas);
+        if (topUp.length) {
+          txRow("Pension crystallisation -> ISA", toIso(yearEnd), deltas);
+          // The crystallisation is taxable too, and mostly sheltered in the ISA rather than
+          // left as cash — top the buffer up for that extra tax the same way.
+          const extra = refillAmount(target);
+          if (extra > 1) fundCash(extra, "Refill: tax on crystallisation", toIso(yearEnd));
+        }
       }
 
-      // Gilt ladder purchases (cash -> gilts).
-      const purchases = planGiltPurchases(state, income, scenario.rates, scenario.strategy, y + 1);
+      // Gilt ladder purchases (cash -> gilts). This year's tax is paid from cash just below, so
+      // it is reserved. A buffer refilled to target leaves room for both anyway; this matters
+      // when the refill fell short (investments running out) and cash is genuinely scarce.
+      const purchases = planGiltPurchases(
+        state,
+        income,
+        scenario.rates,
+        scenario.strategy,
+        y + 1,
+        taxDue(),
+      );
       if (purchases.length) {
         const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
         const maturityYears = new Set<number>();
@@ -444,28 +524,11 @@ export function simulate(scenario: Scenario): SimResult {
     }
 
     // --- Tax for the year ---
-    const yearTax: Record<PersonId, PersonTax> = { nick: blankTax(), tracy: blankTax() };
+    const yearTax = assessTax();
     const taxDeltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
     for (const id of PERSONS) {
-      const parts = {
-        nonSavings: accum.taxableNonSavings[id] + statePension[id],
-        savings: accum.savingsIncome[id],
-        dividends: accum.dividends[id],
-      };
-      const it = computeIncomeTax(parts, p);
-      const basicBandRemaining = Math.max(0, p.personalAllowance + p.basicRateBand - it.taxableTotal);
-      const cgt = computeCGT(accum.realisedGain[id], basicBandRemaining, p);
       disposals.realisedGain[id] = round2(accum.realisedGain[id]);
-      const total = round2(it.tax + cgt.tax);
-      yearTax[id] = {
-        incomeTax: it.tax,
-        cgt: cgt.tax,
-        total,
-        taxableNonSavings: round2(parts.nonSavings),
-        savingsIncome: round2(parts.savings),
-        dividends: round2(parts.dividends),
-        realisedGain: round2(accum.realisedGain[id]),
-      };
+      const total = yearTax[id].total;
       // Pay the tax out of cash.
       state.balances[id].savings -= total;
       taxDeltas[id] = { savings: -total, tax: total };

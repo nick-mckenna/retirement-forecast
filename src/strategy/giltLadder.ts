@@ -17,6 +17,10 @@ export interface GiltPurchase {
  * (sized ~1 year of income) maturing `giltLadderYears` out, funded from spare cash.
  * Gilts are split across both people so each uses their own personal savings allowance
  * on the (taxable) coupon, while the capital return stays CGT-free.
+ *
+ * `reservedCash` is cash already committed (the year's tax bill, paid right after the ladder
+ * is bought) and so not available to invest. It only bites when cash is short of the buffer
+ * target: a buffer at target already holds more than the gilt hold target + a year of cash.
  */
 export function planGiltPurchases(
   state: SimState,
@@ -24,6 +28,7 @@ export function planGiltPurchases(
   rates: Rates,
   strategy: StrategyConfig,
   nextTaxYearStart: number,
+  reservedCash = 0,
 ): GiltPurchase[] {
   const oneYear = targetForYear(income, nextTaxYearStart);
   const giltHoldTarget = Math.max(0, (strategy.bufferYears - 1) * oneYear);
@@ -31,7 +36,7 @@ export function planGiltPurchases(
   if (currentGilts >= giltHoldTarget) return [];
 
   // Cash available to convert into gilts, keeping ~1 year of income as spending cash.
-  const cash = state.balances.nick.savings + state.balances.tracy.savings;
+  const cash = state.balances.nick.savings + state.balances.tracy.savings - reservedCash;
   const spendingCashFloor = oneYear;
   const investible = Math.min(giltHoldTarget - currentGilts, Math.max(0, cash - spendingCashFloor));
   if (investible <= 100) return [];
