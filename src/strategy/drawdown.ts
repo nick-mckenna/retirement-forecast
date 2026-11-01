@@ -1,15 +1,11 @@
 import type { PersonId, StrategyConfig, TaxYearParams } from "../model/types";
 import type { SimState } from "../engine/state";
-import {
-  LUMP_SUM_ALLOWANCE,
-  lsaUsedBy,
-  marginalTaxableShare,
-  pensionGrossForTaxable,
-} from "../tax/pensionDraw";
+import { LUMP_SUM_ALLOWANCE, lsaUsedBy, pensionGrossForTaxable } from "../tax/pensionDraw";
+import { personYearTax } from "../tax/personTax";
 
 export type Source = "pension" | "gia" | "gilt" | "isa";
 /** Sources the marginal optimiser can draw from (gilts are the buffer, not a raise source). */
-type SellSource = "isa" | "pension" | "gia";
+export type SellSource = "isa" | "pension" | "gia";
 
 export interface Withdrawal {
   person: PersonId;
@@ -34,6 +30,11 @@ interface PersonPlan {
   /** The year's savings income and dividends. They are taxed on top of non-savings income,
    *  so they occupy the top of the bands: pension drawn "within a band" must leave room for them. */
   otherIncome: number;
+  /** The same, split by type — the exact pricing taxes them at their own rates. */
+  savings: number;
+  dividends: number;
+  /** Capital gains realised so far this year, including those the plan adds. */
+  runningGain: number;
   cgtAllowanceRemaining: number;
   gainFraction: number;
   /** Lump Sum Allowance left as the plan draws pension. */
@@ -55,6 +56,11 @@ interface Step {
   ) => { taxableNonSavings: number; realisedGain: number; lsaUsed: number };
 }
 
+/** Band-top draws stop this far inside the band. The personal savings allowance drops at a
+ *  cliff edge just past the basic- and higher-rate tops (£1,000 → £500 → £0), so landing exactly
+ *  on a top leaves the result to floating-point noise; £1 of headroom costs at most 20p. */
+const BAND_MARGIN = 1;
+
 function pensionWithinBand(bandTop: number, netOfOtherIncome: boolean) {
   return (plan: PersonPlan, state: SimState) => {
     if (!plan.pensionAccessible) return 0;
@@ -63,7 +69,7 @@ function pensionWithinBand(bandTop: number, netOfOtherIncome: boolean) {
     // Keep the taxable part within the band top (75% of the gross while the Lump Sum Allowance
     // lasts, all of it after). Above the personal allowance the year's savings and dividends
     // stack on top, so they use up band room too.
-    const top = netOfOtherIncome ? bandTop - plan.otherIncome : bandTop;
+    const top = netOfOtherIncome ? bandTop - plan.otherIncome - BAND_MARGIN : bandTop;
     const taxableRoom = Math.max(0, top - plan.runningNonSavings);
     return Math.min(pot, pensionGrossForTaxable(taxableRoom, plan.lsaRemaining));
   };
@@ -93,13 +99,17 @@ function giaAny() {
 function giaEffect(plan: PersonPlan, gross: number) {
   const gain = gross * plan.gainFraction;
   plan.cgtAllowanceRemaining = Math.max(0, plan.cgtAllowanceRemaining - gain);
+  plan.runningGain += gain;
   return { taxableNonSavings: 0, realisedGain: gain, lsaUsed: 0 };
 }
 
 function buildSteps(plans: Record<PersonId, PersonPlan>, config: StrategyConfig): Step[] {
   const persons: PersonId[] = ["nick", "tracy"];
   const steps: Step[] = [];
-  const isaPriority = config.preserveIsa ? 60 : 15;
+  // Preserving the ISA keeps its tax-free shelter for later (after taxable pension); otherwise
+  // it comes straight after the allowances that expire this year (pension in the personal
+  // allowance, GIA in the CGT exempt amount), but before anything that is taxed.
+  const isaPriority = config.preserveIsa ? 60 : 25;
 
   for (const person of persons) {
     const p = plans[person].p;
@@ -176,6 +186,8 @@ export interface RaiseContext {
   plans: Record<PersonId, PersonPlan>;
   config: StrategyConfig;
   year: number;
+  /** "person:source" pairs the planner must not sell from (fixed by a user override). */
+  exclude?: Set<string>;
 }
 
 export function makePlan(
@@ -184,18 +196,23 @@ export function makePlan(
   preexistingNonSavings: number,
   gainFraction: number,
   p: TaxYearParams,
-  otherIncome = 0,
+  /** The year's savings income and dividends so far (a bare number is treated as savings). */
+  other: number | { savings: number; dividends: number } = 0,
   /** Gains already realised this tax year (Bed & ISA, earlier sales): they use the CGT
    *  exempt amount first, so "within the allowance" sales only get what is left. */
   gainSoFar = 0,
   /** Lump Sum Allowance still available (defaults to the full allowance). */
   lsaRemaining = LUMP_SUM_ALLOWANCE,
 ): PersonPlan {
+  const { savings, dividends } = typeof other === "number" ? { savings: other, dividends: 0 } : other;
   return {
     person,
     pensionAccessible,
     runningNonSavings: preexistingNonSavings,
-    otherIncome,
+    otherIncome: savings + dividends,
+    savings,
+    dividends,
+    runningGain: gainSoFar,
     cgtAllowanceRemaining: Math.max(0, p.cgtAnnualExempt - gainSoFar),
     gainFraction: Math.max(0, Math.min(1, gainFraction)),
     lsaRemaining: Math.max(0, lsaRemaining),
@@ -231,6 +248,7 @@ export function raiseCash(
   let need = grossTarget;
   for (const step of steps) {
     if (need <= 0.005) break;
+    if (ctx.exclude?.has(`${step.person}:${step.source}`)) continue;
     const plan = ctx.plans[step.person];
     const avail = step.available(plan, shadow);
     const take = Math.min(need, Math.max(0, avail));
@@ -254,53 +272,77 @@ export function raiseCash(
   return withdrawals;
 }
 
-// --- True per-year optimiser: marginal-cost greedy -------------------------------------
-// Repeatedly take a small increment of cash from whichever (person, source) has the lowest
-// actual marginal tax cost at the current state, recomputing after each increment. Because
-// the per-year tax cost is convex in each source, marginal-cost greedy reaches the tax
-// minimum for raising the required cash this tax year.
+// --- True per-year optimiser: exact-cost segment greedy ---------------------------------
+// Each candidate sale is priced with the same personYearTax the engine uses for the bill, so
+// the cost includes savings and dividends stacked on top of pension income, the shrinking
+// savings starting-rate band and PSA, the 60% allowance taper, the real £125,140 start of the
+// 45% rate, the Lump Sum Allowance running out and the CGT bands. Sales are made in chunks up
+// to the next point where a source's marginal rate can change, choosing the cheapest chunk on
+// average each time; ties go to the allowances that expire this year (pension, then GIA) before
+// the ISA, which keeps its tax-free shelter for later.
 
-function marginalIncomeRate(runningNonSavings: number, p: TaxYearParams): number {
-  // Personal allowance left at this income (withdrawn £1 per £2 above the taper threshold);
-  // bands are measured on taxable income, so the 45% rate starts at £125,140 *taxable*.
-  const pa = Math.max(0, p.personalAllowance - Math.max(0, (runningNonSavings - p.paTaperThreshold) / 2));
-  if (runningNonSavings < pa) return 0;
-  const taxable = runningNonSavings - pa;
-  let rate: number;
-  if (taxable < p.basicRateBand) rate = p.basicRate;
-  else if (taxable < p.basicRateBand + p.higherRateBand) rate = p.higherRate;
-  else rate = p.additionalRate;
-  // In the taper zone each extra £1 also removes 50p of allowance, taxed at the same rate.
-  const taperEnd = p.paTaperThreshold + 2 * p.personalAllowance;
-  if (runningNonSavings >= p.paTaperThreshold && runningNonSavings < taperEnd) rate *= 1.5;
-  return rate;
+const PERSONS: PersonId[] = ["nick", "tracy"];
+/** Preference at equal cost: use-it-or-lose-it allowances first, the ISA last. */
+const SOURCE_ORDER: SellSource[] = ["pension", "gia", "isa"];
+/** The smallest chunk considered, so a missed kink costs at most this much accuracy. */
+const MIN_CHUNK = 500;
+/** Costs within this of each other (per £) are ties: the tax is rounded to pennies, so equal
+ *  rates on different chunk sizes differ by ~1e-5, while real rate steps are ~1% or more. */
+const TIE = 1e-4;
+
+/** The plan's year tax with extra taxable income and/or gains. */
+function planTax(plan: PersonPlan, extraNonSavings: number, extraGain: number): number {
+  return personYearTax(
+    {
+      nonSavings: plan.runningNonSavings + extraNonSavings,
+      savings: plan.savings,
+      dividends: plan.dividends,
+      gain: plan.runningGain + extraGain,
+    },
+    plan.p,
+  ).total;
 }
 
-/** Marginal tax on the next £1 of *gross* raised from a source, at the plan's current state. */
-function marginalCost(source: Source, plan: PersonPlan): number {
-  if (source === "isa" || source === "gilt") return 0;
-  // Savings and dividends sit on top of pension income, so the next £1 of pension is priced at
-  // the top of the stack (it pushes £1 of them up the bands).
-  if (source === "pension") {
-    return marginalTaxableShare(plan.lsaRemaining) * marginalIncomeRate(plan.runningNonSavings + plan.otherIncome, plan.p);
-  }
-  // GIA: only the gain fraction is taxable, and only above the CGT annual exempt amount.
-  if (plan.cgtAllowanceRemaining > 0.5) return 0;
-  const cgtRate =
-    plan.runningNonSavings < plan.p.personalAllowance + plan.p.basicRateBand
-      ? plan.p.cgtBasicRate
-      : plan.p.cgtHigherRate;
-  return plan.gainFraction * cgtRate;
+/** Gross pension amounts (from now) at which the marginal rate can change. */
+function pensionKinks(plan: PersonPlan): number[] {
+  const { p } = plan;
+  const ns = plan.runningNonSavings;
+  const other = plan.savings + plan.dividends;
+  const points = [
+    p.personalAllowance,
+    p.personalAllowance + p.savingsStartingRateBand,
+    p.personalAllowance + p.basicRateBand - other - BAND_MARGIN, // just inside the PSA cliff
+    p.personalAllowance + p.basicRateBand - other,
+    p.personalAllowance + p.basicRateBand,
+    p.paTaperThreshold - other,
+    p.paTaperThreshold + 2 * p.personalAllowance - other,
+    p.basicRateBand + p.higherRateBand - other - BAND_MARGIN,
+    p.basicRateBand + p.higherRateBand - other,
+    p.basicRateBand + p.higherRateBand,
+  ];
+  const out = points
+    .map((x) => x - ns)
+    .filter((d) => d > 0.5)
+    .map((d) => pensionGrossForTaxable(d, plan.lsaRemaining));
+  if (plan.lsaRemaining > 0.5) out.push(4 * plan.lsaRemaining); // where the 25% tax-free part runs out
+  return out;
 }
 
-function applyMarginal(source: Source, plan: PersonPlan, take: number) {
-  if (source === "pension") return pensionEffect(plan, take);
-  if (source === "gia") return giaEffect(plan, take);
-  return { taxableNonSavings: 0, realisedGain: 0, lsaUsed: 0 };
+/** Gross GIA sales (from now) at which the CGT marginal rate can change. */
+function giaKinks(plan: PersonPlan): number[] {
+  if (plan.gainFraction <= 0) return [];
+  const { p } = plan;
+  const exemptLeft = Math.max(0, p.cgtAnnualExempt - plan.runningGain);
+  const taxable = personYearTax(
+    { nonSavings: plan.runningNonSavings, savings: plan.savings, dividends: plan.dividends, gain: 0 },
+    p,
+  ).taxableTotal;
+  const bandLeft = Math.max(0, p.basicRateBand - taxable);
+  return [exemptLeft, exemptLeft + bandLeft].filter((g) => g > 0.5).map((g) => g / plan.gainFraction);
 }
 
 /**
- * Raise `grossTarget` while minimising *this tax year's* tax, by marginal-cost greedy over
+ * Raise `grossTarget` while minimising *this tax year's* tax, by exact-cost greedy over
  * pension / GIA / ISA for both people. Aggregated into one withdrawal per (person, source).
  */
 export function raiseCashMarginal(
@@ -309,39 +351,57 @@ export function raiseCashMarginal(
   ctx: RaiseContext,
 ): Withdrawal[] {
   if (grossTarget <= 0) return [];
-  const persons: PersonId[] = ["nick", "tracy"];
-  const sources: SellSource[] = ["isa", "pension", "gia"];
   const shadow = {
     nick: { ...state.balances.nick },
     tracy: { ...state.balances.tracy },
   };
   const taken: Record<string, Withdrawal> = {};
+  const baseTax: Record<PersonId, number> = {
+    nick: planTax(ctx.plans.nick, 0, 0),
+    tracy: planTax(ctx.plans.tracy, 0, 0),
+  };
 
-  // The increment scales with the target (for speed) but in whole £500 steps, so it only
-  // changes when T crosses a step boundary: the year-end refill solves a fixed point in T,
-  // which a continuously T-dependent increment would make jumpy.
-  const step = Math.max(500, Math.ceil(grossTarget / 600 / 500) * 500);
   let need = grossTarget;
-  let guard = 0;
-  const maxIters = Math.ceil(grossTarget / step) + 100;
-
-  while (need > 0.5 && guard++ < maxIters) {
-    let best: { person: PersonId; source: SellSource; cost: number; avail: number } | null = null;
-    for (const person of persons) {
+  const maxIters = Math.ceil(grossTarget / MIN_CHUNK) + 200;
+  for (let guard = 0; need > 0.5 && guard < maxIters; guard++) {
+    let best: { person: PersonId; source: SellSource; chunk: number; avg: number; order: number } | null = null;
+    for (const person of PERSONS) {
       const plan = ctx.plans[person];
-      for (const source of sources) {
+      for (const [order, source] of SOURCE_ORDER.entries()) {
+        if (ctx.exclude?.has(`${person}:${source}`)) continue;
         if (source === "pension" && !plan.pensionAccessible) continue;
-        const avail = shadow[person][source];
+        const avail = Math.min(need, shadow[person][source]);
         if (avail <= 0.5) continue;
-        const cost = marginalCost(source, plan);
-        if (!best || cost < best.cost) best = { person, source, cost, avail };
+        const kinks = source === "pension" ? pensionKinks(plan) : source === "gia" ? giaKinks(plan) : [];
+        const next = kinks.length ? Math.min(...kinks) : Infinity;
+        for (const chunk of new Set([Math.min(avail, next), Math.min(avail, MIN_CHUNK)])) {
+          if (chunk <= 0.5) continue;
+          let cost = 0;
+          if (source === "pension") {
+            cost = planTax(plan, chunk - lsaUsedBy(chunk, plan.lsaRemaining), 0) - baseTax[person];
+          } else if (source === "gia") {
+            cost = planTax(plan, 0, chunk * plan.gainFraction) - baseTax[person];
+          }
+          const avg = cost / chunk;
+          const better =
+            !best ||
+            avg < best.avg - TIE ||
+            (Math.abs(avg - best.avg) <= TIE &&
+              (order < best.order || (order === best.order && chunk > best.chunk)));
+          if (better) best = { person, source, chunk, avg, order };
+        }
       }
     }
     if (!best) break; // nothing left to sell
-    const take = Math.min(step, need, best.avail);
     const plan = ctx.plans[best.person];
-    const eff = applyMarginal(best.source, plan, take);
-    shadow[best.person][best.source] -= take;
+    const eff =
+      best.source === "pension"
+        ? pensionEffect(plan, best.chunk)
+        : best.source === "gia"
+          ? giaEffect(plan, best.chunk)
+          : { taxableNonSavings: 0, realisedGain: 0, lsaUsed: 0 };
+    shadow[best.person][best.source] -= best.chunk;
+    baseTax[best.person] = planTax(plan, 0, 0);
     const key = `${best.person}:${best.source}`;
     const w = (taken[key] ??= {
       person: best.person,
@@ -352,11 +412,31 @@ export function raiseCashMarginal(
       lsaUsed: 0,
       decisionKey: `${ctx.year}:${best.person}:${best.source}`,
     });
-    w.gross += take;
+    w.gross += best.chunk;
     w.taxableNonSavings += eff.taxableNonSavings;
     w.realisedGain += eff.realisedGain;
     w.lsaUsed += eff.lsaUsed;
-    need -= take;
+    need -= best.chunk;
   }
   return Object.values(taken);
+}
+
+/**
+ * A fixed withdrawal (e.g. a user override) built against a plan exactly like the planners'
+ * own sales — pension taxable via the Lump Sum Allowance, GIA gain via the live gain fraction —
+ * and charged to the plan so automatic sales on top of it are priced correctly.
+ */
+export function planWithdrawal(
+  plan: PersonPlan,
+  source: SellSource,
+  gross: number,
+  decisionKey: string,
+): Withdrawal {
+  const eff =
+    source === "pension"
+      ? pensionEffect(plan, gross)
+      : source === "gia"
+        ? giaEffect(plan, gross)
+        : { taxableNonSavings: 0, realisedGain: 0, lsaUsed: 0 };
+  return { person: plan.person, source, gross, ...eff, decisionKey };
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LedgerRow, PersonColumns } from "../engine/ledger";
 import { simulate } from "../engine/simulate";
 import { defaultScenario } from "../model/defaults";
+import { migrateScenario } from "../model/migrate";
 import type { Scenario, StrategyConfig } from "../model/types";
 import { makePlan } from "../strategy/drawdown";
 import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
@@ -175,5 +176,49 @@ describe("the model starts the day after the start date", () => {
     const r = simulate(s);
     expect(r.years[0].taxYearStart).toBe(2028);
     expect(r.warnings.some((w) => w.includes("didn't match the start date"))).toBe(true);
+  });
+});
+
+describe("user overrides are fixed refill sales", () => {
+  it("sells exactly the overridden amount and raises the rest automatically, landing on target", () => {
+    const s = defaultScenario();
+    s.overrides = [{ key: "2029:tracy:pension", amount: 30_000 }];
+    const r = simulate(s);
+    const y = r.years.find((x) => x.taxYearStart === 2029)!;
+    expect(y.disposals.sales.tracy.pension).toBeCloseTo(30_000, 6);
+    expect(y.bufferEnd).toBeCloseTo(y.bufferTargetValue, 0); // the tax provision saw the override
+  });
+
+  it("clamps an override to what the pot holds, with a warning", () => {
+    const s = defaultScenario();
+    s.overrides = [{ key: "2029:tracy:isa", amount: 99_000_000 }];
+    const r = simulate(s);
+    expect(r.warnings.some((w) => w.includes('Override "2029:tracy:isa" asks for'))).toBe(true);
+    expectLedgerReconciles(r.rows);
+    for (const row of r.rows.filter((x) => x.type === "BALANCE")) expect(row.tracy.isa).toBeGreaterThanOrEqual(-0.01);
+  });
+
+  it("warns about malformed and out-of-range keys instead of silently ignoring them", () => {
+    const s = defaultScenario();
+    s.overrides = [
+      { key: "2030:refill:nick:pension", amount: 1000 },
+      { key: "2099:nick:isa", amount: 1000 },
+    ];
+    const w = simulate(s).warnings;
+    expect(w.some((x) => x.includes('"2030:refill:nick:pension" isn\'t a valid'))).toBe(true);
+    expect(w.some((x) => x.includes('"2099:nick:isa" is for a year outside'))).toBe(true);
+  });
+
+  it("migrates the old documented key forms to the one that matches", () => {
+    const s = defaultScenario();
+    s.overrides = [
+      { key: "2030:refill:nick:pension", amount: 1000 },
+      { key: "2030:refill:nick:pension:30", amount: 500 },
+      { key: "2031:tracy:gia", amount: 200 },
+    ];
+    expect(migrateScenario(s).overrides).toEqual([
+      { key: "2030:nick:pension", amount: 1500 },
+      { key: "2031:tracy:gia", amount: 200 },
+    ]);
   });
 });

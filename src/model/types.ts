@@ -138,7 +138,9 @@ export interface StrategyConfig {
    * year (even if not needed for income) to extract the pension tax-efficiently.
    */
   fillPersonalAllowanceFromPension: boolean;
-  /** Preserve ISA as long as possible (draw taxable sources first). */
+  /** Heuristic order: true keeps the ISA until after taxable pension (its tax-free shelter is
+   *  worth more later); false uses it right after the allowances that expire each year (pension
+   *  in the personal allowance, GIA in the CGT exempt amount) but before anything taxed. */
   preserveIsa: boolean;
   /** Target maturity ladder length in years for newly bought gilts. */
   giltLadderYears: number;
@@ -158,11 +160,13 @@ export interface StrategyConfig {
   lifetimeFillFraction?: number;
 }
 
-/** A user override for a specific auto-generated transaction, keyed by a stable id. */
+/** A user override fixing one year-end refill sale: "year:person:source", e.g.
+ *  "2030:nick:pension" (sources: pension | gia | isa). The engine sells exactly that gross
+ *  amount (clamped to what the pot holds, with a warning) and raises the rest automatically
+ *  from the other pots; the override's tax is included in the year's provision. */
 export interface Override {
-  /** e.g. "2030:refill:nick:pension" */
   key: string;
-  /** New gross amount to raise/sell from that source (replaces the auto value). */
+  /** Gross amount to sell from that pot in that year's refill. */
   amount: number;
 }
 

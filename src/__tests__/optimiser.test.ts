@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { initState } from "../engine/state";
 import { makePlan, raiseCash, raiseCashMarginal } from "../strategy/drawdown";
 import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
+import { personYearTax } from "../tax/personTax";
 import { defaultScenario } from "../model/defaults";
 import { runForecast, totalTaxOf } from "../strategy/optimiser";
 
@@ -20,17 +21,55 @@ describe("marginal-cost optimiser (per-year)", () => {
     expect(raised).toBeCloseTo(50000, 0);
   });
 
-  it("uses zero-tax sources first (drains ISA before taxing anything)", () => {
+  it("uses the allowances that expire this year before the ISA, at no tax", () => {
     const state = initState(scenario);
     const plans = {
       nick: makePlan("nick", true, 0, 0.3, p),
       tracy: makePlan("tracy", true, 0, 0.3, p),
     };
-    // 20k is well within the available ISA balances, so nothing should be taxed.
+    // 20k fits inside the two personal allowances (pension, 25% tax-free + 75% at 0%): as
+    // tax-free as the ISA this year, but the allowance is lost if unused, so it goes first.
     const ws = raiseCashMarginal(state, 20000, { plans, config: scenario.strategy, year: 2028 });
-    const taxable = ws.reduce((s, w) => s + w.taxableNonSavings + w.realisedGain, 0);
-    expect(taxable).toBe(0);
-    expect(ws.every((w) => w.source === "isa")).toBe(true);
+    expect(ws.some((w) => w.source === "isa")).toBe(false);
+    for (const id of ["nick", "tracy"] as const) {
+      const mine = ws.filter((w) => w.person === id);
+      const tax = personYearTax(
+        {
+          nonSavings: mine.reduce((t, w) => t + w.taxableNonSavings, 0),
+          savings: 0,
+          dividends: 0,
+          gain: mine.reduce((t, w) => t + w.realisedGain, 0),
+        },
+        p,
+      ).total;
+      expect(tax).toBe(0);
+    }
+  });
+
+  it("prices pension at its real marginal cost: savings income stacked on top, and the taper", () => {
+    const state = initState(scenario);
+    for (const id of ["nick", "tracy"] as const) {
+      state.balances[id] = { ...state.balances[id], isa: 0, gia: 0, pension: 2_000_000 };
+    }
+    // Person A already has £40k of pension income and £20k of interest; B has nothing yet.
+    const plans = {
+      nick: makePlan("nick", true, 40_000, 0, p, { savings: 20_000, dividends: 0 }),
+      tracy: makePlan("tracy", true, 0, 0, p),
+    };
+    const ws = raiseCashMarginal(state, 30_000, { plans, config: scenario.strategy, year: 2028 });
+    // A's next £ would push his interest into the higher band, so B (still basic-rate) draws.
+    expect(ws.find((w) => w.person === "nick")?.gross ?? 0).toBe(0);
+    expect(ws.find((w) => w.person === "tracy")?.gross).toBeCloseTo(30_000, 0);
+  });
+
+  it("raises exactly what was asked, with the tax it reports equal to the real bill", () => {
+    const state = initState(scenario);
+    const plans = {
+      nick: makePlan("nick", true, 30_000, 0.4, p, { savings: 3_000, dividends: 1_000 }),
+      tracy: makePlan("tracy", true, 55_000, 0.4, p, { savings: 6_000, dividends: 0 }),
+    };
+    const ws = raiseCashMarginal(state, 120_000, { plans, config: scenario.strategy, year: 2028 });
+    expect(ws.reduce((t, w) => t + w.gross, 0)).toBeCloseTo(120_000, 6);
   });
 });
 
@@ -93,7 +132,8 @@ describe("heuristic band tops (taper- and savings-aware)", () => {
       .filter((w) => w.person === "nick" && w.source === "pension")
       .reduce((s, w) => s + w.taxableNonSavings, 0);
     // Nick's pension stops 10k short of the basic-rate top so his interest stays basic-rate.
-    expect(nickTaxable).toBeCloseTo(p25.personalAllowance + p25.basicRateBand - 10_000, 0);
+    // (£1 short of the top: band-top draws stay just inside the savings-allowance cliff edge.)
+    expect(nickTaxable).toBeCloseTo(p25.personalAllowance + p25.basicRateBand - 10_000 - 1, 0);
     expect(ws.some((w) => w.person === "tracy" && w.source === "pension")).toBe(true);
   });
 });

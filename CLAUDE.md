@@ -71,10 +71,13 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   `simulate` once for `heuristic`/`annual` tax modes; for `lifetime` mode it simulates several
   candidate pension-crystallisation strategies and returns the lowest-total-tax one. Keep the engine
   pure and side-effect free.
-- **`strategy.taxMode` selects how investments are sold**: `heuristic` (fixed priority list),
-  `annual` (marginal-cost greedy → minimises that year's tax), `lifetime` (searches how far to
-  crystallise pension into the ISA each year to minimise total tax). See `src/strategy/drawdown.ts`
-  (`raiseCash` vs `raiseCashMarginal`) and `optimiser.ts`.
+- **`strategy.taxMode` selects how investments are sold**: `heuristic` (fixed priority list; its
+  band tops are net of the year's savings and dividends and stop at the £100k taper), `annual`
+  (`raiseCashMarginal`: exact-cost segment greedy that minimises that year's tax — every candidate
+  sale is priced with `personYearTax` in chunks up to the next kink in the rates, ties going to the
+  allowances that expire this year (pension, then GIA) before the ISA; deliberately myopic, so it
+  spends the tax-free ISA before 20% pension), `lifetime` (searches how far to crystallise pension
+  into the ISA each year to minimise total tax). See `src/strategy/drawdown.ts` and `optimiser.ts`.
 - **Income target**: `income.mode` is `fixed` (`baseAnnual`) or `swr` (`swrRate` × starting
   ISA + pension + GIA). `resolveIncome` (`src/model/incomeTargets.ts`) turns either into a
   `baseAnnual` that is then inflated yearly; the engine, Excel export and UI only ever see the
@@ -281,9 +284,11 @@ forecast:
   helpers in `taxYear.ts` (`taxYearStartYear`, `ageAtTaxYearStart`) rather than raw date math.
 - **Gilts are generalised** beyond the sheet's fixed T30–T35 columns into a `GiltHolding[]` list with
   real maturities; the Excel export and UI collapse them to per-person gilt totals.
-- **Overrides**: auto-generated refill withdrawals are aggregated by `${year}:${person}:${source}` and
-  can be replaced by a `Scenario.overrides` entry with the same key (see `applyOverrides` in
-  `simulate.ts`).
+- **Overrides**: a `Scenario.overrides` entry keyed `year:person:source` (e.g. `2030:nick:pension`)
+  is a fixed year-end refill sale: clamped to the pot (with a warning), charged to the plans via
+  `planWithdrawal`, and the automatic plan raises the rest from the other pots inside the refill's
+  fixed point (`refillSales` in `simulate.ts`), so its tax is provisioned. Malformed or out-of-range
+  keys warn; migration rewrites the old `year:refill:person:source[:n]` form. No UI writes them yet.
 - **Golden tests** (`src/__tests__/golden.test.ts`) pin the engine's monthly growth/draw mechanics
   to hand-computed illustrative figures (e.g. an ISA at the default rates: 200,000 → 201,130.83 in
   one month) and smoke-test a full `simulate(defaultScenario())` run (year count, first-year income

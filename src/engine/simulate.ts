@@ -7,7 +7,14 @@ import { lsaUsedBy, pensionGrossForTaxable } from "../tax/pensionDraw";
 import { resolveTaxParams } from "../tax/taxParams";
 import { ageAtTaxYearStart, ageOn, addMonths, modelStartDate, parseDate, toIso } from "../tax/taxYear";
 import { bufferTarget, currentBuffer } from "../strategy/buffer";
-import { makePlan, raiseCash, raiseCashMarginal, type Withdrawal } from "../strategy/drawdown";
+import {
+  makePlan,
+  planWithdrawal,
+  raiseCash,
+  raiseCashMarginal,
+  type SellSource,
+  type Withdrawal,
+} from "../strategy/drawdown";
 import { planGiltPurchases } from "../strategy/giltLadder";
 import { emptyPersonColumns, type LedgerRow, type PersonColumns } from "./ledger";
 import { giaGainFraction, giltValue, initState, sellGia, sellGilts, type SimState } from "./state";
@@ -160,7 +167,22 @@ export function simulate(scenario: Scenario): SimResult {
         `${income.startYear}/${String(income.startYear + 1).slice(2)}, the tax year after ${scenario.startDate}.`,
     );
   }
-  const overrideMap = new Map(scenario.overrides.map((o) => [o.key, o.amount]));
+  // User overrides: fixed year-end refill sales, "year:person:source".
+  const fixedSales: { year: number; person: PersonId; source: SellSource; amount: number; key: string }[] = [];
+  for (const o of scenario.overrides) {
+    const m = /^(\d{4}):(nick|tracy):(pension|gia|isa)$/.exec(o.key);
+    if (!m || !Number.isFinite(o.amount) || o.amount < 0) {
+      warnings.push(`Override "${o.key}" isn't a valid "year:person:source" sale amount and is ignored.`);
+      continue;
+    }
+    const year = Number(m[1]);
+    if (year < income.startYear || year >= income.startYear + income.years) {
+      warnings.push(`Override "${o.key}" is for a year outside the forecast and is ignored.`);
+      continue;
+    }
+    fixedSales.push({ year, person: m[2] as PersonId, source: m[3] as SellSource, amount: o.amount, key: o.key });
+  }
+  const clampWarned = new Set<string>();
   const purchases = (scenario.purchases ?? []).map((pp) => ({ ...pp, at: parseDate(pp.date).getTime() }));
   const handledPurchases = new Set<string>();
   /** Income the monthly draw could not pay, per tax year (with the first month it happened). */
@@ -281,7 +303,7 @@ export function simulate(scenario: Scenario): SimResult {
       const plan = (id: PersonId) =>
         mkPlan(id, scenario, state, onDate, p, {
           nonSavings: accum.statePension[id] + accum.taxableNonSavings[id],
-          other: accum.savingsIncome[id] + accum.dividends[id],
+          other: { savings: accum.savingsIncome[id], dividends: accum.dividends[id] },
           gainSoFar: accum.realisedGain[id],
         });
       return { nick: plan("nick"), tracy: plan("tracy") };
@@ -341,12 +363,41 @@ export function simulate(scenario: Scenario): SimResult {
      * gains), so solve T = target − buffer + tax(after selling T) by fixed-point iteration; it
      * converges fast because each extra £1 raised costs well under £1 in tax.
      */
+    /**
+     * This year's refill sales for a cash target: the user's fixed sales (clamped to what each
+     * pot holds, and charged to the plans so the rest is priced on top of them), then the
+     * automatic plan for the remainder from the pots that aren't fixed.
+     */
+    const refillSales = (target: number, plans: ReturnType<typeof buildPlans>): Withdrawal[] => {
+      const exclude = new Set<string>();
+      const fixed: Withdrawal[] = [];
+      for (const o of fixedSales) {
+        if (o.year !== y) continue;
+        exclude.add(`${o.person}:${o.source}`);
+        const acc = state.balances[o.person];
+        const plan = plans[o.person];
+        const cap = o.source === "pension" ? (plan.pensionAccessible ? acc.pension : 0) : acc[o.source];
+        let amount = o.amount;
+        if (amount > cap + 0.5) {
+          if (!clampWarned.has(o.key)) {
+            clampWarned.add(o.key);
+            warnings.push(
+              `Override "${o.key}" asks for ${gbp(o.amount)} but only ${gbp(cap)} can be sold from that pot — selling ${gbp(cap)}.`,
+            );
+          }
+          amount = cap;
+        }
+        if (amount > 0.5) fixed.push(planWithdrawal(plan, o.source, amount, o.key));
+      }
+      const rest = target - fixed.reduce((t, w) => t + w.gross, 0);
+      if (rest <= 1) return fixed;
+      const ctx = { plans, config: scenario.strategy, year: y, exclude };
+      const auto = mode === "heuristic" ? raiseCash(state, rest, ctx) : raiseCashMarginal(state, rest, ctx);
+      return [...fixed, ...auto];
+    };
+
     const refillAmount = (target: number): number => {
-      const sell = (t: number): Withdrawal[] => {
-        if (t <= 1) return [];
-        const ctx = { plans: buildPlans(yearEnd), config: scenario.strategy, year: y };
-        return mode === "heuristic" ? raiseCash(state, t, ctx) : raiseCashMarginal(state, t, ctx);
-      };
+      const sell = (t: number): Withdrawal[] => refillSales(t, buildPlans(yearEnd));
       const gapBeforeSale = target - currentBuffer(state);
       let t = gapBeforeSale + taxDue();
       for (let k = 0; k < 50; k++) {
@@ -532,15 +583,9 @@ export function simulate(scenario: Scenario): SimResult {
       // the next refill.
       const target = bufferTarget(income, scenario.strategy, y + 1);
       const raise = refillAmount(target);
-      if (raise > 1) {
-        const ctx = { plans, config: scenario.strategy, year: y };
-        let planned =
-          mode === "heuristic"
-            ? raiseCash(state, raise, ctx)
-            : raiseCashMarginal(state, raise, ctx);
-        planned = applyOverrides(planned, overrideMap, y, state);
-        applyPlanned(planned, "Refill: sell investments", toIso(yearEnd));
-      }
+      // Fixed (overridden) sales happen even when no refill is needed.
+      const planned = refillSales(Math.max(0, raise), plans);
+      if (planned.length) applyPlanned(planned, "Refill: sell investments", toIso(yearEnd));
 
       // Lifetime mode: proactively crystallise pension up to a taxable-income target and
       // shelter the net proceeds in the ISA (up to the remaining allowance), so pension is
@@ -741,7 +786,7 @@ function mkPlan(
   state: SimState,
   onDate: Date,
   p: ReturnType<typeof resolveTaxParams>,
-  income: { nonSavings: number; other: number; gainSoFar: number },
+  income: { nonSavings: number; other: { savings: number; dividends: number }; gainSoFar: number },
 ) {
   const accessible = ageOn(scenario.people[id].dob, onDate) >= scenario.people[id].pensionAccessAge;
   const gainFraction = giaGainFraction(state.balances[id]);
@@ -808,38 +853,6 @@ function spendCash(state: SimState, amount: number): Record<PersonId, number> {
   state.balances.nick.savings -= nick;
   state.balances.tracy.savings -= tracy;
   return { nick, tracy };
-}
-
-/** Aggregate the auto plan by person+source and let user overrides replace amounts. */
-function applyOverrides(
-  planned: Withdrawal[],
-  overrides: Map<string, number>,
-  year: number,
-  state: SimState,
-): Withdrawal[] {
-  const byKey = new Map<string, Withdrawal>();
-  for (const w of planned) {
-    const key = `${year}:${w.person}:${w.source}`;
-    const cur = byKey.get(key);
-    if (cur) {
-      cur.gross += w.gross;
-      cur.taxableNonSavings += w.taxableNonSavings;
-      cur.realisedGain += w.realisedGain;
-      cur.lsaUsed += w.lsaUsed;
-    } else {
-      byKey.set(key, { ...w, decisionKey: key });
-    }
-  }
-  for (const [key, w] of byKey) {
-    if (overrides.has(key)) {
-      const amt = overrides.get(key)!;
-      w.gross = amt;
-      w.lsaUsed = w.source === "pension" ? lsaUsedBy(amt, state.balances[w.person].lsaRemaining) : 0;
-      w.taxableNonSavings = w.source === "pension" ? amt - w.lsaUsed : 0;
-      w.realisedGain = w.source === "gia" ? amt * giaGainFraction(state.balances[w.person]) : 0;
-    }
-  }
-  return [...byKey.values()];
 }
 
 /**

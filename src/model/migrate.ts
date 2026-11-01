@@ -61,10 +61,23 @@ export function migrateScenario(s: Scenario): Scenario {
     strategy: { ...s.strategy, taxMode: s.strategy.taxMode ?? "heuristic" },
     taxPolicy,
     taxParams,
-    overrides: s.overrides ?? [],
+    overrides: migrateOverrideKeys(s.overrides ?? []),
     purchases: s.purchases ?? [],
     schemaVersion: SCHEMA_VERSION,
   };
+}
+
+/** Override keys were documented as "2030:refill:nick:pension" (and the heuristic emitted
+ *  "…:pension:30"), but only "2030:nick:pension" ever matched. Rewrite the old forms to the
+ *  matching one, summing any that collide. Idempotent. */
+function migrateOverrideKeys(overrides: Scenario["overrides"]): Scenario["overrides"] {
+  const out = new Map<string, number>();
+  for (const o of overrides) {
+    const m = /^(\d{4}):refill:(nick|tracy):(pension|gia|isa)(?::\d+)?$/.exec(o.key);
+    const key = m ? `${m[1]}:${m[2]}:${m[3]}` : o.key;
+    out.set(key, (out.get(key) ?? 0) + o.amount);
+  }
+  return [...out].map(([key, amount]) => ({ key, amount }));
 }
 
 // ---- v1 → v2: threshold policy + sparse tax-parameter edits --------------------------------
