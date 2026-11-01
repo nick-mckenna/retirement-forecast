@@ -22,7 +22,7 @@ import {
   type Withdrawal,
 } from "../strategy/drawdown";
 import { planGiltPurchases } from "../strategy/giltLadder";
-import { emptyPersonColumns, type LedgerRow, type PersonColumns } from "./ledger";
+import { emptyPersonColumns, INCOME_ROW_LABELS, type LedgerRow, type PersonColumns } from "./ledger";
 import { giaGainFraction, giltValue, initState, sellGia, sellGilts, type SimState } from "./state";
 import { PREMIUM_BOND_LIMIT } from "../tax/allowanceLimits";
 
@@ -276,7 +276,7 @@ export function simulate(scenario: Scenario): SimResult {
   let finalIncomeHandled = PERSONS.every((id) => fi.perPerson[id].net === 0 && fi.perPerson[id].tax === 0);
   if (!finalIncomeHandled && fiAt < modelStart.getTime()) {
     for (const id of PERSONS) state.balances[id].savings += fi.perPerson[id].net;
-    txRow("Final Income", fi.date, fiRow());
+    txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
     balanceRow("After Final Income", fi.date);
     finalIncomeHandled = true;
   }
@@ -552,7 +552,7 @@ export function simulate(scenario: Scenario): SimResult {
             sd[id] = { savings: amt, income: amt };
           }
         }
-        if (Object.keys(sd).length) txRow("State Pension", toIso(monthDate), sd);
+        if (Object.keys(sd).length) txRow(INCOME_ROW_LABELS.statePension, toIso(monthDate), sd);
       }
 
       // Final employment income landing this month: earnings of this tax year.
@@ -563,7 +563,7 @@ export function simulate(scenario: Scenario): SimResult {
           accum.taxableNonSavings[id] += net + tax;
           accum.paidAtSource[id] += tax;
         }
-        txRow("Final Income", fi.date, fiRow());
+        txRow(INCOME_ROW_LABELS.finalIncome, fi.date, fiRow());
         finalIncomeHandled = true;
       }
 
@@ -586,7 +586,7 @@ export function simulate(scenario: Scenario): SimResult {
           shortfalls.set(y, s);
         }
       }
-      txRow("Income", toIso(monthDate), inc);
+      txRow(INCOME_ROW_LABELS.drawdown, toIso(monthDate), inc);
 
       // One-off purchases falling in this month: raise the cash by selling investments
       // (tax-efficiently, so the tax lands in this year), then pay the purchase out of cash.

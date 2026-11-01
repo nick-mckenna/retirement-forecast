@@ -43,7 +43,7 @@ export function GiltsView({ result, scenario }: { result: SimResult; scenario: S
             {gilts.map((g, i) => (
               <tr key={i} className={rowClass(i)} onClick={() => toggle(i)}>
                 <td className="label">{shortDate(g.purchaseDateIso)}</td>
-                <td className="label" style={{ color: g.holder === "nick" ? "var(--nick)" : "var(--tracy)" }}>
+                <td className="label" style={{ color: g.holder === "nick" ? "var(--nick-text)" : "var(--tracy-text)" }}>
                   {scenario.people[g.holder].name}
                 </td>
                 <td className="label">{g.name}</td>

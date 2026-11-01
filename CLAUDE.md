@@ -348,6 +348,13 @@ forecast:
   split (`buildSnapshotPdf` / `exportSnapshotPdf`), and its numbers come from
   `buildSnapshotSummary` (`src/export/snapshotSummary.ts`), the one pure source that both the
   on-screen `SnapshotView` and the PDF render from — change figures there, not in either view.
+- **Person colours** live in `src/ui/chartPalette.ts`, validated colour-blind-safe with the dataviz
+  validator on the dark card surface and on white (the PDF): `PERSON_COLORS` for marks (also
+  `--nick`/`--tracy` in `src/index.css` and the Snapshot PDF), `PERSON_TEXT_COLORS` for text on the
+  dark UI (`--nick-text`/`--tracy-text`, ≥ 4.5:1 — the mark colours are too dark for text), per-person
+  stack tints and `TOTAL_COLOR`. Re-run the validator if you change them. The dashboard income chart
+  stacks each person by source via `incomeByTaxYear(...).bySource`, which classifies ledger rows by
+  `INCOME_ROW_LABELS` (`src/engine/ledger.ts`) — use those constants when emitting income rows.
 - `PersonId` is the fixed pair `"nick" | "tracy"`: internal keys used throughout the model, the SQL
   rows and the server's validation (account `owner`). Display names come from `Person.name`
   ("Person A/B" in the defaults). Never rename the keys or add a third person casually.

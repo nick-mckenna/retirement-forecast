@@ -116,7 +116,7 @@ export function ForecastView({
                   <th
                     key={g.person}
                     colSpan={g.accounts.length}
-                    style={{ color: g.person === "nick" ? "var(--nick)" : "var(--tracy)", textAlign: "center" }}
+                    style={{ color: g.person === "nick" ? "var(--nick-text)" : "var(--tracy-text)", textAlign: "center" }}
                   >
                     {g.name}
                   </th>

@@ -3,6 +3,7 @@
 // SnapshotView.tsx) and the PDF export (src/export/snapshotPdf.ts), so the two
 // can never drift. No DOM, no jsPDF: same inputs in → same plain object out.
 
+import { PERSON_COLORS } from "../ui/chartPalette";
 import type { PersonId, Scenario } from "../model/types";
 import type { InvestmentAccount, PreAccountKind } from "../model/preRetirementTypes";
 import {
@@ -15,10 +16,7 @@ import { pct } from "../ui/format";
 
 /** Hex colours mirroring the --nick / --tracy CSS custom properties in
  *  src/index.css (which aren't readable from a pure/Node context). */
-export const PERSON_COLORS: Record<PersonId, string> = {
-  nick: "#4da3ff",
-  tracy: "#c98bff",
-};
+export { PERSON_COLORS };
 
 /** One row of a per-kind breakdown. `shareFraction` is the fraction (0..1) of
  *  the group total, or null when that total is 0 (rendered as "—"). */

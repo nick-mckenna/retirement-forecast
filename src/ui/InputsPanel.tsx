@@ -170,7 +170,7 @@ export function InputsPanel() {
     const lb = linked?.balances[id];
     return (
       <div className="card" key={id}>
-        <h2 style={{ color: id === "nick" ? "var(--nick)" : "var(--tracy)" }}>{p.name}</h2>
+        <h2 style={{ color: id === "nick" ? "var(--nick-text)" : "var(--tracy-text)" }}>{p.name}</h2>
         <div className="field">
           <label>Name</label>
           <input
@@ -408,7 +408,7 @@ export function InputsPanel() {
         </div>
         {(["nick", "tracy"] as PersonId[]).map((id) => (
           <div key={id}>
-            <div className="section-title" style={{ color: id === "nick" ? "var(--nick)" : "var(--tracy)" }}>
+            <div className="section-title" style={{ color: id === "nick" ? "var(--nick-text)" : "var(--tracy-text)" }}>
               {s.people[id].name}
             </div>
             <NumField

@@ -1,3 +1,4 @@
+import { PERSON_TEXT_COLORS } from "../chartPalette";
 import { useState } from "react";
 import type { ExpenseMonth } from "../../model/expenseTypes";
 import type { PreRetirementData } from "../../model/preRetirementTypes";
@@ -49,7 +50,7 @@ export function SnapshotView({
     ...summary.people.map((p) => ({
       key: p.id,
       title: `${p.name} by category`,
-      color: p.colorHex,
+      color: PERSON_TEXT_COLORS[p.id],
       rows: p.categories,
     })),
     { key: "both", title: "Both by category", rows: summary.bothCategories },
@@ -140,7 +141,7 @@ export function SnapshotView({
       <div className="grid-2" style={{ alignItems: "start", gap: 18, maxWidth: 1000 }}>
         {summary.people.map((p) => (
           <div className="card" key={p.id}>
-            <h2 style={{ color: p.colorHex }}>{p.name}</h2>
+            <h2 style={{ color: PERSON_TEXT_COLORS[p.id] }}>{p.name}</h2>
             <table className="fit zebra">
               <tbody>
                 {p.accounts.map((a) => (

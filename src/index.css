@@ -9,8 +9,11 @@
   --accent-2: #2ecc9b;
   --warn: #ffb454;
   --danger: #ff6b6b;
-  --nick: #4da3ff;
-  --tracy: #c98bff;
+  /* Person colours (validated, see src/ui/chartPalette.ts): marks, and text tones for labels. */
+  --nick: #1b68cf;
+  --tracy: #a970f2;
+  --nick-text: #7aa7ee;
+  --tracy-text: #b98af4;
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   color: var(--text);
 }
