@@ -30,7 +30,7 @@ import { clampDay, createMonthFromTemplates, daysInMonth, monthKeysBetween, mont
 import { PREMIUM_BOND_LIMIT, RELIEF_AT_SOURCE_GROSS_UP } from "../tax/allowanceLimits";
 import { buildPricing, type GiltPricing } from "../gilts/pricing";
 import { addDays, monthEnd } from "../gilts/schedule";
-import { giltFlowsBetween, lotsByAccount, lotsValue } from "./giltAccounts";
+import { giltFlowsBetween, lotCost, lotsByAccount, lotsValue } from "./giltAccounts";
 
 /** One account's growth, given what it holds once the period's money has moved (`held`):
  *  Premium Bond prizes are only reinvested up to the holding limit (NS&I pays the rest out, to
@@ -511,31 +511,54 @@ export interface LatestActualTotal {
   recordedCount: number;
   /** Accounts with no record, falling back to their opening balance. */
   openingCount: number;
+  /** Gilt accounts holding real gilts with no record: their opening cash plus the gilts at the
+   *  latest DMO prices. */
+  giltValuedCount: number;
 }
 
 /** Σ the latest balance figure the user has entered for each account, with no
  *  projection at all: its most recent recorded actual balance (the Accounts
  *  tab's "Latest actual balance" column), or its opening balance when it has
  *  none. No growth, no tagged flows — so the figures can be dated differently
- *  per account; `latestDate` is the most recent record contributing. */
-export function latestActualTotal(data: PreRetirementData): LatestActualTotal {
+ *  per account; `latestDate` is the most recent record contributing.
+ *
+ *  Given `gilts` (the pricing and the date of the latest DMO prices), a gilt account holding real
+ *  gilts with no record counts as its opening cash — less what holdings bought since the opening
+ *  month cost, never below zero (the purchases came out of it first) — plus the gilts held on
+ *  that date at those prices. Its coupons and redemptions aren't added (nothing is projected). */
+export function latestActualTotal(
+  data: PreRetirementData,
+  gilts?: { pricing: GiltPricing; dateIso: string },
+): LatestActualTotal {
   let total = 0;
   let latestDate: string | null = null;
   let recordedCount = 0;
   let openingCount = 0;
-  for (const a of dedupeAccounts(data.accounts).accounts) {
+  let giltValuedCount = 0;
+  const accounts = dedupeAccounts(data.accounts).accounts;
+  const lotMap = gilts ? lotsByAccount(data, accounts) : new Map<string, never[]>();
+  const openingStart = `${data.openingMonth}-01`;
+  for (const a of accounts) {
     const latest = latestOverride(data, a.id);
+    const lots = lotMap.get(a.id);
     if (latest) {
       total += latest.value;
       recordedCount++;
       const iso = overrideDateIso(latest);
       if (latestDate == null || iso > latestDate) latestDate = iso;
+    } else if (gilts && lots) {
+      const spent = lots
+        .filter((l) => l.purchaseDate >= openingStart && l.purchaseDate <= gilts.dateIso)
+        .reduce((s, l) => s + lotCost(l, gilts.pricing), 0);
+      total += Math.max(0, a.openingBalance - spent) + lotsValue(lots, gilts.dateIso, gilts.pricing);
+      giltValuedCount++;
+      if (latestDate == null || gilts.dateIso > latestDate) latestDate = gilts.dateIso;
     } else {
       total += a.openingBalance;
       openingCount++;
     }
   }
-  return { total, latestDate, recordedCount, openingCount };
+  return { total, latestDate, recordedCount, openingCount, giltValuedCount };
 }
 
 /** End-of-day balances per account id at an ISO date ("yyyy-mm-dd"), using

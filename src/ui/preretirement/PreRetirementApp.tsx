@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { usePreRetirementStore } from "../../store/preRetirementStore";
 import { useExpenseStore } from "../../store/expenseStore";
 import { useStore } from "../../store/scenarioStore";
-import { useGiltMarketStore } from "../../store/giltMarketStore";
+import { ukToday, useGiltMarketStore } from "../../store/giltMarketStore";
 import { buildPricing } from "../../gilts/pricing";
 import { latestActualTotal, projectAccounts, ratesForKinds } from "../../preretirement/project";
 import { allowanceWarnings } from "../../preretirement/allowances";
@@ -55,7 +55,10 @@ export function PreRetirementApp() {
   const warnings = [...result.warnings, ...allowance];
   const last = result.months[result.months.length - 1];
   const todayMonth = result.months.find((m) => m.key === todayKey);
-  const actual = useMemo(() => latestActualTotal(data), [data]);
+  const actual = useMemo(
+    () => latestActualTotal(data, { pricing: buildPricing(giltMarket), dateIso: giltMarket?.asOf ?? ukToday() }),
+    [data, giltMarket],
+  );
 
   return (
     <main className="main">
@@ -112,14 +115,22 @@ export function PreRetirementApp() {
                 <b>Latest actual balance</b> column.{" "}
                 {actual.openingCount > 0 ? (
                   <>
-                    {actual.openingCount} of {actual.openingCount + actual.recordedCount} account(s)
-                    have no recorded balance yet, so their <b>opening balance</b> (start of{" "}
+                    {actual.openingCount} of {actual.openingCount + actual.recordedCount + actual.giltValuedCount}{" "}
+                    account(s) have no recorded balance yet, so their <b>opening balance</b> (start of{" "}
                     {monthLabel(data.openingMonth)}) is used instead.
                   </>
-                ) : (
+                ) : actual.giltValuedCount === 0 ? (
                   <>Every account has a recorded balance.</>
-                )}
+                ) : null}
               </p>
+              {actual.giltValuedCount > 0 && (
+                <p>
+                  {actual.giltValuedCount} gilts account(s) with gilt holdings and no recorded balance count
+                  as their opening cash (less any holdings bought since) plus their gilts at the DMO prices
+                  of {giltMarket?.asOf ? shortDate(giltMarket.asOf) : "today (at par — no DMO prices yet)"},
+                  including accrued interest.
+                </p>
+              )}
               <p className="muted">
                 Records are dated individually, so this can mix figures taken on different days
                 {actual.latestDate ? ` — the date shown is the most recent of them` : ""}.

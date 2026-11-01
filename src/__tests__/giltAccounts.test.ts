@@ -5,7 +5,7 @@ import { buildPricing } from "../gilts/pricing";
 import { accruedPer100, monthEnd } from "../gilts/schedule";
 import { neededPriceDates, missingPriceDates } from "../gilts/market";
 import { lotsValue, openingGiltsAt } from "../preretirement/giltAccounts";
-import { projectAccounts, sampleAtDate, type KindRates } from "../preretirement/project";
+import { latestActualTotal, projectAccounts, sampleAtDate, type KindRates } from "../preretirement/project";
 import { handoffBalances, resolveScenarioForRun } from "../preretirement/link";
 import { simulate } from "../engine/simulate";
 import { defaultScenario } from "../model/defaults";
@@ -150,6 +150,28 @@ describe("a gilt account holding real gilts", () => {
   it("ignores a holding in an account that isn't a gilts account", () => {
     const r = project(data([L1], giltAccount({ kind: "savings" })));
     expect(r.warnings.some((w) => w.includes("isn't a gilts account"))).toBe(true);
+  });
+});
+
+describe("the latest actual balance of a gilt account with holdings", () => {
+  const asOf = market.asOf!;
+
+  it("is its opening cash, less purchases since the opening month, plus the gilts at the latest prices", () => {
+    // L1 was held before the opening month; L2 (bought in December) is after the as-of date.
+    const before = latestActualTotal(data(), { pricing, dateIso: asOf });
+    expect(before.total).toBeCloseTo(5_000 + lotsValue([L1], asOf, pricing), 6);
+    expect(before.giltValuedCount).toBe(1);
+    expect(before.latestDate).toBe(asOf);
+    // Valued later, L2 has been bought out of the cash (which can't go below zero).
+    const later = latestActualTotal(data(), { pricing, dateIso: "2027-01-15" });
+    expect(later.total).toBeCloseTo(lotsValue([L1, L2], "2027-01-15", pricing), 6);
+  });
+
+  it("uses a recorded balance when there is one, and the opening balance without pricing", () => {
+    const d = data();
+    d.overrides = [{ accountId: "g1", monthKey: "2026-11", day: 20, value: 16_000, basis: null }];
+    expect(latestActualTotal(d, { pricing, dateIso: asOf }).total).toBe(16_000);
+    expect(latestActualTotal(data()).total).toBe(5_000);
   });
 });
 

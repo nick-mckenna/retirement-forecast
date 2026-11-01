@@ -340,6 +340,7 @@ describe("latestActualTotal", () => {
       latestDate: "2026-08-31", // sav1's end-of-August record is the most recent
       recordedCount: 2,
       openingCount: 0,
+      giltValuedCount: 0,
     });
   });
 
@@ -354,12 +355,14 @@ describe("latestActualTotal", () => {
       latestDate: "2026-08-20",
       recordedCount: 1,
       openingCount: 1,
+      giltValuedCount: 0,
     });
     expect(latestActualTotal(data([]))).toEqual({
       total: 0,
       latestDate: null,
       recordedCount: 0,
       openingCount: 0,
+      giltValuedCount: 0,
     });
   });
 
