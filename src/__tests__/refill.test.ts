@@ -40,6 +40,12 @@ describe.each(MODES)("year-end refill provisions for the tax bill (%s)", (mode) 
       );
     }
   });
+
+  it("never leaves either person's cash overdrawn at year end while the household has cash", () => {
+    for (const r of yearEnds) {
+      expect(Math.min(r.nick.savings, r.tracy.savings), r.dateIso).toBeGreaterThanOrEqual(-0.01);
+    }
+  });
 });
 
 describe.each(["heuristic", "annual"] as const)("refill sizing is tight (%s)", (mode) => {
@@ -59,22 +65,39 @@ describe.each(["heuristic", "annual"] as const)("refill sizing is tight (%s)", (
   });
 });
 
-describe("gilt ladder keeps cash reserved for the tax bill", () => {
-  // Synthetic: no gilts held, cash £30,000 above the one-year spending floor.
+describe("gilt ladder", () => {
+  // Synthetic: no gilts held; each person's cash is set per test.
   const s = defaultScenario();
   const income = resolveIncome(s);
   const next = income.startYear + 1;
   const oneYear = targetForYear(income, next);
-  const state = initState(s);
-  state.gilts = [];
-  state.balances.nick.savings = oneYear / 2 + 15000;
-  state.balances.tracy.savings = oneYear / 2 + 15000;
-  const bought = (reserved: number) =>
-    planGiltPurchases(state, income, s.rates, s.strategy, next, reserved).reduce((t, g) => t + g.nominal, 0);
+  const plan = (nickCash: number, tracyCash: number, reserved = { nick: 0, tracy: 0 }) => {
+    const state = initState(s);
+    state.gilts = [];
+    state.balances.nick.savings = nickCash;
+    state.balances.tracy.savings = tracyCash;
+    const out = planGiltPurchases(state, income, s.rates, s.strategy, next, reserved);
+    const of = (id: "nick" | "tracy") => out.filter((g) => g.holder === id).reduce((t, g) => t + g.nominal, 0);
+    return { nick: of("nick"), tracy: of("tracy"), total: of("nick") + of("tracy") };
+  };
 
-  it("invests only the cash above the floor that isn't reserved", () => {
-    expect(bought(0)).toBeCloseTo(30000, -1);
-    expect(bought(20000)).toBeCloseTo(10000, -1);
-    expect(bought(30000)).toBe(0);
+  it("invests only the household cash above the floor that isn't reserved for tax", () => {
+    const each = oneYear / 2 + 15000; // £30,000 spare in total
+    expect(plan(each, each).total).toBeCloseTo(30000, -1);
+    expect(plan(each, each, { nick: 10000, tracy: 10000 }).total).toBeCloseTo(10000, -1);
+    expect(plan(each, each, { nick: 15000, tracy: 15000 }).total).toBe(0);
+  });
+
+  it("splits a rung half each when both people can afford it", () => {
+    const p = plan(oneYear / 2 + 15000, oneYear / 2 + 15000);
+    expect(p.nick).toBeCloseTo(15000, -1);
+    expect(p.tracy).toBeCloseTo(15000, -1);
+  });
+
+  it("buys a person's share only from their own spare cash, after their tax", () => {
+    // Nick has £5,000 above his half of the floor but owes £8,000 tax; Tracy has plenty.
+    const p = plan(oneYear / 2 + 5000, oneYear / 2 + 60000, { nick: 8000, tracy: 0 });
+    expect(p.nick).toBe(0);
+    expect(p.tracy).toBeCloseTo(57000, -1); // the whole household surplus: 5k + 60k − 8k
   });
 });

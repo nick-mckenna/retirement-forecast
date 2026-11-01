@@ -94,6 +94,10 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   the buffer ends every year short by the tax bill and cash can run out before the next refill.
   `assessTax` is the one pure tax calculation used both for that estimate and for the real bill;
   `src/__tests__/refill.test.ts` pins the buffer-at-target invariant in all three tax modes.
+  Cash is treated as joint for paying out (as the monthly draw already is): `payTax` takes each
+  person's tax from their own cash then their spouse's, and `planGiltPurchases` splits a rung by
+  each person's spare cash after their tax — so neither person is overdrawn while the couple
+  has cash (also pinned in `refill.test.ts`).
 - **Strategy is separated from the engine** (`src/strategy/`): `buffer.ts` (target = N years of income
   as cash+gilts), `drawdown.ts` (the tax-efficient *sell order* — a priority list of extraction steps
   per person; this is where "which investment to sell" lives), `giltLadder.ts` (rolling ladder). The

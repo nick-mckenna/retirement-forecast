@@ -470,17 +470,14 @@ export function simulate(scenario: Scenario): SimResult {
         }
       }
 
-      // Gilt ladder purchases (cash -> gilts). This year's tax is paid from cash just below, so
-      // it is reserved. A buffer refilled to target leaves room for both anyway; this matters
-      // when the refill fell short (investments running out) and cash is genuinely scarce.
-      const purchases = planGiltPurchases(
-        state,
-        income,
-        scenario.rates,
-        scenario.strategy,
-        y + 1,
-        taxDue(),
-      );
+      // Gilt ladder purchases (cash -> gilts). Each person's tax is paid from their cash just
+      // below, so it is reserved per person — that also stops the ladder buying a person's
+      // rung with cash they need for their own tax bill.
+      const taxNow = assessTax();
+      const purchases = planGiltPurchases(state, income, scenario.rates, scenario.strategy, y + 1, {
+        nick: taxNow.nick.total,
+        tracy: taxNow.tracy.total,
+      });
       if (purchases.length) {
         const deltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
         const maturityYears = new Set<number>();
@@ -525,14 +522,10 @@ export function simulate(scenario: Scenario): SimResult {
 
     // --- Tax for the year ---
     const yearTax = assessTax();
+    for (const id of PERSONS) disposals.realisedGain[id] = round2(accum.realisedGain[id]);
+    const paid = payTax(state, { nick: yearTax.nick.total, tracy: yearTax.tracy.total });
     const taxDeltas: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
-    for (const id of PERSONS) {
-      disposals.realisedGain[id] = round2(accum.realisedGain[id]);
-      const total = yearTax[id].total;
-      // Pay the tax out of cash.
-      state.balances[id].savings -= total;
-      taxDeltas[id] = { savings: -total, tax: total };
-    }
+    for (const id of PERSONS) taxDeltas[id] = { savings: -paid[id], tax: yearTax[id].total };
     txRow("Tax", toIso(yearEnd), taxDeltas);
     balanceRow("Year End", toIso(yearEnd));
 
@@ -612,6 +605,33 @@ function applyWithdrawal(state: SimState, w: Withdrawal): void {
   else if (w.source === "isa") acc.isa -= w.gross;
   else if (w.source === "gia") sellGia(acc, w.gross);
   acc.savings += w.gross;
+}
+
+/**
+ * Pay each person's tax bill from cash: their own first, then any shortfall from their
+ * spouse's — the household's cash is drawn jointly, as the monthly income draw already is —
+ * so neither person is overdrawn while the couple has the money. Only if both are short is
+ * the remainder overdrawn on the liable person. Returns the cash taken from each person.
+ */
+function payTax(state: SimState, bill: Record<PersonId, number>): Record<PersonId, number> {
+  const taken: Record<PersonId, number> = { nick: 0, tracy: 0 };
+  const short: Record<PersonId, number> = { nick: 0, tracy: 0 };
+  for (const id of PERSONS) {
+    const own = Math.min(bill[id], Math.max(0, state.balances[id].savings));
+    state.balances[id].savings -= own;
+    taken[id] += own;
+    short[id] = bill[id] - own;
+  }
+  for (const id of PERSONS) {
+    if (short[id] <= 0) continue;
+    const other: PersonId = id === "nick" ? "tracy" : "nick";
+    const cover = Math.min(short[id], Math.max(0, state.balances[other].savings));
+    state.balances[other].savings -= cover;
+    taken[other] += cover;
+    state.balances[id].savings -= short[id] - cover;
+    taken[id] += short[id] - cover;
+  }
+  return taken;
 }
 
 /** Remove `amount` of cash from the couple's savings (nick first, then tracy). */
