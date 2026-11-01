@@ -110,10 +110,14 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   person's tax from their own cash then their spouse's, and `planGiltPurchases` splits a rung by
   each person's spare cash after their tax — so neither person is overdrawn while the couple
   has cash (also pinned in `refill.test.ts`).
-- **Strategy is separated from the engine** (`src/strategy/`): `buffer.ts` (target = N years of income
-  as cash+gilts), `drawdown.ts` (the tax-efficient *sell order* — a priority list of extraction steps
-  per person; this is where "which investment to sell" lives), `giltLadder.ts` (rolling ladder). The
-  engine calls these; they return plans, the engine applies them. Keep that boundary.
+- **Strategy is separated from the engine** (`src/strategy/`): `buffer.ts` (target = the next N —
+  possibly fractional — years of the income *need net of State Pension*, as cash + gilts; the engine
+  passes that need as a `NeedFn`), `drawdown.ts` (the tax-efficient *sell order* — a priority list of
+  extraction steps per person; this is where "which investment to sell" lives), `giltLadder.ts`
+  (liability-matched, self-repairing ladder: next year is cash plus gilts maturing on its 6 April;
+  each later window year, up to `giltLadderYears` ahead, gets whatever it is still short, nearest
+  first; opening gilts are spread across the first rung years by `initState`). The engine calls
+  these; they return plans, the engine applies them. Keep that boundary.
 - **Tax is its own layer** (`src/tax/`): `incomeTax.ts` implements the real UK ordering
   (non-savings → savings → dividends, with PA taper, savings starting-rate band + PSA, dividend
   allowance; savings income has its own rates, which diverge from 2027/28); `cgt.ts` (gilts are

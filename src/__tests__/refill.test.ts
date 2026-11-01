@@ -5,6 +5,8 @@ import { defaultScenario } from "../model/defaults";
 import { resolveIncome, targetForYear } from "../model/incomeTargets";
 import type { Scenario, StrategyConfig } from "../model/types";
 import { planGiltPurchases } from "../strategy/giltLadder";
+import { bufferTarget } from "../strategy/buffer";
+import { statePensionForYear, statePensionGrowth } from "../tax/statePension";
 
 // The year-end refill must leave the cash + gilts buffer at its target *after* the year's tax
 // has been paid out of it. Before this was provisioned for, the buffer finished every year
@@ -32,12 +34,22 @@ describe.each(MODES)("year-end refill provisions for the tax bill (%s)", (mode) 
     }
   });
 
-  it("keeps a full year of the next year's income as cash after tax (the ladder reserves it)", () => {
+  it("keeps next year's net need as cash plus gilts maturing on its 6 April, after tax", () => {
+    const s = scenarioFor(mode);
+    const growth = statePensionGrowth(s.rates);
     for (let i = 0; i < result.years.length - 1; i++) {
+      const next = result.years[i + 1].taxYearStart;
       const cash = yearEnds[i].nick.savings + yearEnds[i].tracy.savings;
-      expect(cash, `${result.years[i].taxYearStart}/${result.years[i].taxYearStart + 1}`).toBeGreaterThanOrEqual(
-        result.years[i + 1].incomeTarget - 1,
+      const maturing = result.gilts
+        .filter((g) => g.maturityDateIso === `${next}-04-06` && g.purchaseDateIso <= yearEnds[i].dateIso)
+        .reduce((t, g) => t + g.nominal, 0);
+      const need = Math.max(
+        0,
+        result.years[i + 1].incomeTarget -
+          statePensionForYear(s.people.nick, next, s.income.startYear, growth) -
+          statePensionForYear(s.people.tracy, next, s.income.startYear, growth),
       );
+      expect(cash + maturing, `${result.years[i].taxYearStart}/${next}`).toBeGreaterThanOrEqual(need - 1);
     }
   });
 
@@ -76,7 +88,7 @@ describe("gilt ladder", () => {
     state.gilts = [];
     state.balances.nick.savings = nickCash;
     state.balances.tracy.savings = tracyCash;
-    const out = planGiltPurchases(state, income, s.rates, s.strategy, next, reserved);
+    const out = planGiltPurchases(state, (y) => targetForYear(income, y), s.rates, s.strategy, next, reserved);
     const of = (id: "nick" | "tracy") => out.filter((g) => g.holder === id).reduce((t, g) => t + g.nominal, 0);
     return { nick: of("nick"), tracy: of("tracy"), total: of("nick") + of("tracy") };
   };
@@ -138,5 +150,65 @@ describe("engine warnings and accrual guards", () => {
     const gia = s.balances.nick.gia;
     const afterIsaFill = gia - Math.min(20000, gia);
     expect(simulate(s).years[0].tax.nick.dividends).toBeCloseTo(afterIsaFill * 0.12, 1);
+  });
+});
+
+describe("buffer and ladder sizing", () => {
+  const s = defaultScenario();
+  const income = resolveIncome(s);
+  const next = income.startYear + 1;
+  const flat = (_year: number) => 80_000;
+
+  it("sizes the buffer on the need net of State Pension, with fractional years", () => {
+    expect(bufferTarget(flat, { ...s.strategy, bufferYears: 3 }, next)).toBeCloseTo(240_000, 6);
+    expect(bufferTarget(flat, { ...s.strategy, bufferYears: 2.5 }, next)).toBeCloseTo(200_000, 6);
+    expect(bufferTarget((y) => (y >= next + 1 ? 30_000 : 80_000), { ...s.strategy, bufferYears: 3 }, next)).toBeCloseTo(
+      140_000,
+      6,
+    );
+  });
+
+  const ladder = (
+    gilts: { maturityYear: number; nominal: number }[],
+    cash: number,
+    strategy = s.strategy,
+    need: (year: number) => number = flat,
+  ) => {
+    const state = initState(s);
+    state.gilts = gilts.map((g, i) => ({ id: `t${i}`, holder: "nick", name: "x", couponRate: 0, cost: g.nominal, purchaseYear: next - 1, ...g }));
+    state.balances.nick.savings = cash / 2;
+    state.balances.tracy.savings = cash / 2;
+    const out = planGiltPurchases(state, need, s.rates, strategy, next);
+    const byYear: Record<number, number> = {};
+    for (const p of out) byYear[p.maturityYear] = (byYear[p.maturityYear] ?? 0) + p.nominal;
+    return byYear;
+  };
+
+  it("buys each later window year's shortfall, nearest first, keeping next year's need as cash", () => {
+    // Window next..next+2: next is cash (80k kept); next+1 and next+2 each need 80k of gilts.
+    expect(ladder([], 80_000 + 200_000)).toEqual({ [next + 1]: 80_000, [next + 2]: 80_000 });
+    expect(ladder([], 80_000 + 100_000)).toEqual({ [next + 1]: 80_000, [next + 2]: 20_000 });
+  });
+
+  it("repairs a small rung instead of repeating it, and counts gilts maturing next year as cash", () => {
+    const held = [
+      { maturityYear: next, nominal: 30_000 }, // pays part of next year: only 50k of cash kept
+      { maturityYear: next + 1, nominal: 75_000 },
+      { maturityYear: next + 2, nominal: 10_000 },
+    ];
+    expect(ladder(held, 50_000 + 100_000)).toEqual({ [next + 1]: 5_000, [next + 2]: 70_000 });
+  });
+
+  it("never buys beyond the buffer window or the ladder length, and sizes a fractional last year", () => {
+    expect(ladder([], 1_000_000, { ...s.strategy, bufferYears: 3, giltLadderYears: 1 })).toEqual({ [next + 1]: 80_000 });
+    expect(ladder([], 1_000_000, { ...s.strategy, bufferYears: 2.5, giltLadderYears: 5 })).toEqual({
+      [next + 1]: 80_000,
+      [next + 2]: 40_000,
+    });
+  });
+
+  it("follows the need net of State Pension", () => {
+    const need = (y: number) => (y >= next + 1 ? 30_000 : 80_000);
+    expect(ladder([], 1_000_000, s.strategy, need)).toEqual({ [next + 1]: 30_000, [next + 2]: 30_000 });
   });
 });

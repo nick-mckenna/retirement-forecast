@@ -1,7 +1,6 @@
-import type { IncomeTargetConfig, PersonId, Rates, StrategyConfig } from "../model/types";
-import { targetForYear } from "../model/incomeTargets";
+import type { PersonId, Rates, StrategyConfig } from "../model/types";
 import type { SimState } from "../engine/state";
-import { giltValue } from "../engine/state";
+import { bufferWindow, type NeedFn } from "./buffer";
 
 export interface GiltPurchase {
   holder: PersonId;
@@ -11,70 +10,69 @@ export interface GiltPurchase {
   decisionKey: string;
 }
 
+const PERSONS: PersonId[] = ["nick", "tracy"];
+
 /**
- * Maintain a rolling gilt ladder: keep roughly (bufferYears - 1) years of income in
- * gilts, laddered so about one rung matures each year. Each year we buy one new rung
- * (sized ~1 year of income) maturing `giltLadderYears` out, funded from spare cash.
- * Gilts are split across both people so each uses their own personal savings allowance
- * on the (taxable) coupon, while the capital return stays CGT-free.
+ * A liability-matched, self-repairing gilt ladder. The buffer covers the next N tax years'
+ * income need (net of State Pension): next year from cash plus the gilts maturing on its
+ * 6 April, each later year in the window from gilts maturing at its start. So each year end we
+ * buy, nearest year first, whatever each later window year (up to `giltLadderYears` ahead) is
+ * still short — a rung that came up small is topped up the next year instead of the shape
+ * repeating forever — funded only from cash beyond next year's own need.
  *
- * `reservedCash` is each person's cash already committed (their tax bill for the year, paid
- * right after the ladder is bought) and so not available to invest.
+ * Gilts are split across both people so each uses their own personal savings allowance on the
+ * (taxable) coupon, while the capital return stays CGT-free. `reservedCash` is each person's
+ * cash already committed (their tax for the year, paid right after the ladder is bought).
  */
 export function planGiltPurchases(
   state: SimState,
-  income: IncomeTargetConfig,
+  need: NeedFn,
   rates: Rates,
   strategy: StrategyConfig,
   nextTaxYearStart: number,
   reservedCash: Record<PersonId, number> = { nick: 0, tracy: 0 },
 ): GiltPurchase[] {
-  const oneYear = targetForYear(income, nextTaxYearStart);
-  const giltHoldTarget = Math.max(0, (strategy.bufferYears - 1) * oneYear);
-  const currentGilts = giltValue(state);
-  if (currentGilts >= giltHoldTarget) return [];
+  const held = (year: number) =>
+    state.gilts.filter((g) => g.maturityYear === year).reduce((s, g) => s + g.nominal, 0);
 
-  // Cash available to convert into gilts, keeping ~1 year of income as spending cash.
-  // (The tax reservation only bites when the buffer is below target: one refilled to target
-  // already holds more than the gilt hold target plus a year of cash.)
+  // Next year is paid from cash plus what matures on its 6 April; keep that much cash back.
+  const spendingCashFloor = Math.max(0, need(nextTaxYearStart) - held(nextTaxYearStart));
   const free = (id: PersonId) => state.balances[id].savings - reservedCash[id];
-  const cash = free("nick") + free("tracy");
-  const spendingCashFloor = oneYear;
-  const investible = Math.min(giltHoldTarget - currentGilts, Math.max(0, cash - spendingCashFloor));
-  if (investible <= 100) return [];
+  let householdSpare = Math.max(0, free("nick") + free("tracy") - spendingCashFloor);
+  if (householdSpare <= 100) return [];
 
-  const rung = Math.min(investible, oneYear); // one rung ~ one year of income
-  const maturityYear = nextTaxYearStart + Math.max(1, strategy.giltLadderYears);
+  // Each person keeps half the floor and their own tax; between them their spare cash always
+  // covers what the household can spend, since Σ max(0, free − floor/2) ≥ Σ free − floor.
+  const personSpare: Record<PersonId, number> = {
+    nick: Math.max(0, free("nick") - spendingCashFloor / 2),
+    tracy: Math.max(0, free("tracy") - spendingCashFloor / 2),
+  };
 
-  // Split the rung half each where both can afford it, but never beyond a person's own spare
-  // cash (after their tax and their half of the spending floor) — otherwise one person's
-  // cash goes negative at year end while the household's is fine. Whatever one can't take
-  // goes to the other; between them their spare cash always covers the rung, since
-  // rung <= cash - floor <= spare(nick) + spare(tracy).
-  const spare = (id: PersonId) => Math.max(0, free(id) - spendingCashFloor / 2);
-  const nickFirst = Math.min(rung / 2, spare("nick"));
-  const tracyShare = Math.min(rung - nickFirst, spare("tracy"));
-  const nickShare = Math.min(rung - tracyShare, spare("nick"));
-
-  const out: GiltPurchase[] = [
-    {
-      holder: "nick",
-      nominal: round0(nickShare),
-      maturityYear,
-      couponRate: rates.giltCoupon,
-      decisionKey: `${nextTaxYearStart}:gilt:nick`,
-    },
-    {
-      holder: "tracy",
-      nominal: round0(tracyShare),
-      maturityYear,
-      couponRate: rates.giltCoupon,
-      decisionKey: `${nextTaxYearStart}:gilt:tracy`,
-    },
-  ];
-  return out.filter((g) => g.nominal > 0);
-}
-
-function round0(x: number): number {
-  return Math.round(x);
+  const lastRung = nextTaxYearStart + Math.max(1, strategy.giltLadderYears);
+  const out: GiltPurchase[] = [];
+  for (const { year, weight } of bufferWindow(strategy, nextTaxYearStart)) {
+    if (year === nextTaxYearStart || year > lastRung) continue;
+    const shortfall = Math.max(0, need(year) * weight - held(year));
+    const rung = Math.min(shortfall, householdSpare);
+    if (rung <= 100) continue;
+    // Half each where both can afford it; whatever one can't take goes to the other.
+    const nickFirst = Math.min(rung / 2, personSpare.nick);
+    const tracyShare = Math.min(rung - nickFirst, personSpare.tracy);
+    const nickShare = Math.min(rung - tracyShare, personSpare.nick);
+    // Whole pounds, rounded down so a share never exceeds the person's spare cash.
+    const shares: Record<PersonId, number> = { nick: Math.floor(nickShare), tracy: Math.floor(tracyShare) };
+    for (const holder of PERSONS) {
+      if (shares[holder] <= 0) continue;
+      out.push({
+        holder,
+        nominal: shares[holder],
+        maturityYear: year,
+        couponRate: rates.giltCoupon,
+        decisionKey: `${nextTaxYearStart}:gilt:${holder}:${year}`,
+      });
+      personSpare[holder] -= shares[holder];
+    }
+    householdSpare -= shares.nick + shares.tracy;
+  }
+  return out;
 }

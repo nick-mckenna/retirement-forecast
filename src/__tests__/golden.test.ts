@@ -54,8 +54,10 @@ describe("full simulation smoke test", () => {
 
   it("records gilt rungs with purchase and maturity dates", () => {
     expect(result.gilts.length).toBeGreaterThan(1);
-    // The £15,000 T30 held at the start is captured as an initial rung.
-    expect(result.gilts.some((g) => g.initial && g.nominal === 15000)).toBe(true);
+    // The £15,000 of gilts held at the start is spread across the first rung years.
+    const initial = result.gilts.filter((g) => g.initial);
+    expect(initial.reduce((t, g) => t + g.nominal, 0)).toBeCloseTo(15000, 6);
+    expect(new Set(initial.map((g) => g.maturityDateIso)).size).toBeGreaterThan(1);
     // The ladder buys new rungs with a later maturity than purchase date.
     const bought = result.gilts.filter((g) => !g.initial);
     expect(bought.length).toBeGreaterThan(0);

@@ -1,5 +1,5 @@
 import type { PersonId, Scenario } from "../model/types";
-import { parseDate } from "../tax/taxYear";
+import { firstModelledTaxYear, parseDate } from "../tax/taxYear";
 import { LUMP_SUM_ALLOWANCE } from "../tax/pensionDraw";
 
 export interface AccountState {
@@ -46,20 +46,30 @@ export function initState(scenario: Scenario): SimState {
       lsaRemaining: Math.max(0, LUMP_SUM_ALLOWANCE - (scenario.people[id].lumpSumAllowanceUsed ?? 0)),
     };
   };
+  // Opening gilts (only a total is known) are spread evenly across the ladder's rung years —
+  // maturing at the start of each later year of the first buffer window — rather than all
+  // forced to mature together.
+  const firstYear = firstModelledTaxYear(scenario.startDate);
+  const rungs = Math.max(
+    1,
+    Math.min(Math.ceil(scenario.strategy.bufferYears) - 1, Math.max(1, scenario.strategy.giltLadderYears)),
+  );
   const gilts: GiltHolding[] = [];
   let giltCounter = 0;
   for (const id of ["nick", "tracy"] as PersonId[]) {
     const g = scenario.balances[id].gilts;
-    if (g > 0) {
+    if (g <= 0) continue;
+    for (let k = 1; k <= rungs; k++) {
+      const maturityYear = firstYear + k;
       gilts.push({
         id: `g${giltCounter++}`,
         holder: id,
-        name: "T30",
-        nominal: g,
+        name: `G${maturityYear}`,
+        nominal: g / rungs,
         couponRate: scenario.rates.giltCoupon,
-        cost: g,
+        cost: g / rungs,
         purchaseYear: startYear,
-        maturityYear: startYear + 3,
+        maturityYear,
       });
     }
   }

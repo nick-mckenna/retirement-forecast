@@ -64,9 +64,13 @@ export function targetForYear(cfg: IncomeTargetConfig, startYear: number): numbe
   return cfg.baseAnnual * Math.pow(1 + cfg.growth, offset);
 }
 
-/** Sum of the income targets for `count` consecutive years starting at `startYear`. */
+/** Sum of the income targets for `count` consecutive years starting at `startYear`; a
+ *  fractional count adds that fraction of the next year (2.5 = two years + half the third). */
 export function sumTargets(cfg: IncomeTargetConfig, startYear: number, count: number): number {
+  const whole = Math.floor(count);
   let total = 0;
-  for (let i = 0; i < count; i++) total += targetForYear(cfg, startYear + i);
+  for (let i = 0; i < whole; i++) total += targetForYear(cfg, startYear + i);
+  const frac = count - whole;
+  if (frac > 1e-9) total += frac * targetForYear(cfg, startYear + whole);
   return total;
 }

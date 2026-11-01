@@ -2,7 +2,13 @@ import type { PersonId, Scenario } from "../model/types";
 import { annualToMonthly } from "../model/rates";
 import { resolveIncome, targetForYear } from "../model/incomeTargets";
 import { coupleYearTax } from "../tax/personTax";
-import { statePensionGrowth, statePensionInPeriod, statePensionRate, statePensionStartDate } from "../tax/statePension";
+import {
+  statePensionForYear,
+  statePensionGrowth,
+  statePensionInPeriod,
+  statePensionRate,
+  statePensionStartDate,
+} from "../tax/statePension";
 import { lsaUsedBy, pensionGrossForTaxable } from "../tax/pensionDraw";
 import { resolveTaxParams } from "../tax/taxParams";
 import { ageAtTaxYearStart, ageOn, addMonths, modelStartDate, parseDate, toIso } from "../tax/taxYear";
@@ -157,6 +163,21 @@ export function simulate(scenario: Scenario): SimResult {
   const income = resolveIncome(scenario);
   const modelStartYear = income.startYear;
   const spGrowth = statePensionGrowth(scenario.rates);
+  // The income the buffer must fund each year: the target less both State Pensions.
+  const needMemo = new Map<number, number>();
+  const netNeed = (year: number): number => {
+    let v = needMemo.get(year);
+    if (v == null) {
+      v = Math.max(
+        0,
+        targetForYear(income, year) -
+          statePensionForYear(scenario.people.nick, year, modelStartYear, spGrowth) -
+          statePensionForYear(scenario.people.tracy, year, modelStartYear, spGrowth),
+      );
+      needMemo.set(year, v);
+    }
+    return v;
+  };
   const spStart: Record<PersonId, Date> = {
     nick: statePensionStartDate(scenario.people.nick),
     tracy: statePensionStartDate(scenario.people.tracy),
@@ -581,7 +602,7 @@ export function simulate(scenario: Scenario): SimResult {
       // Refill so the buffer is back at target *after* this year's tax is paid from it —
       // otherwise it starts every year short by the tax bill and cash can run out before
       // the next refill.
-      const target = bufferTarget(income, scenario.strategy, y + 1);
+      const target = bufferTarget(netNeed, scenario.strategy, y + 1);
       const raise = refillAmount(target);
       // Fixed (overridden) sales happen even when no refill is needed.
       const planned = refillSales(Math.max(0, raise), plans);
@@ -627,7 +648,7 @@ export function simulate(scenario: Scenario): SimResult {
       // below, so it is reserved per person — that also stops the ladder buying a person's
       // rung with cash they need for their own tax bill.
       const taxNow = assessTax();
-      const purchases = planGiltPurchases(state, income, scenario.rates, scenario.strategy, y + 1, {
+      const purchases = planGiltPurchases(state, netNeed, scenario.rates, scenario.strategy, y + 1, {
         nick: Math.max(0, taxNow.nick.due),
         tracy: Math.max(0, taxNow.tracy.due),
       });
@@ -684,7 +705,7 @@ export function simulate(scenario: Scenario): SimResult {
     txRow("Tax", toIso(yearEnd), taxDeltas);
     balanceRow("Year End", toIso(yearEnd));
 
-    const bufTargetVal = bufferTarget(income, scenario.strategy, y + 1);
+    const bufTargetVal = bufferTarget(netNeed, scenario.strategy, y + 1);
     const nw = rows[rows.length - 1].netWorth;
     if (nw <= 0 && !warnings.some((w) => w.includes("depleted"))) {
       warnings.push(`Portfolio depleted around tax year ${y}/${y + 1}.`);
