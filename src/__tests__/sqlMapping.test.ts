@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Scenario } from "../model/types";
-import { defaultScenario } from "../model/defaults";
+import { defaultScenario, SCHEMA_VERSION } from "../model/defaults";
 import { migrateScenario } from "../model/migrate";
 import { DEFAULT_TAX_POLICY, projectTaxParams } from "../tax/taxParams";
 import { rowsToScenario, scenarioToRows, type ScenarioRows } from "../../server/mapping";
@@ -14,6 +14,10 @@ function fullScenario(): Scenario {
   s.income.mode = "swr";
   s.strategy.taxMode = "lifetime";
   s.strategy.lifetimeFillFraction = 0.65;
+  s.married = true;
+  s.rates.statePensionGrowth = 0.03;
+  s.people.nick.statePensionAge = 66.5; // a fractional override; tracy stays statutory (null)
+  s.people.tracy.lumpSumAllowanceUsed = 40_000;
   s.taxPolicy = { freezeUntilYear: 2035, indexation: "custom", uprating: 0.02 }; // non-default, so the columns are exercised
   s.taxParams = [
     { year: 2029, personalAllowance: 14000, savingsBasicRate: 0.22 }, // sparse: only the edited fields
@@ -150,7 +154,7 @@ describe("scenario migration v1 → v2 (threshold policy, sparse tax edits)", ()
   it("turns the untouched v1 default {2031, 0%} into the statutory default", () => {
     const m = migrateScenario(v1({ freezeUntilYear: 2031, uprating: 0 }, []));
     expect(m.taxPolicy).toEqual(DEFAULT_TAX_POLICY);
-    expect(m.schemaVersion).toBe(2);
+    expect(m.schemaVersion).toBe(SCHEMA_VERSION);
   });
 
   it("keeps any other v1 policy as a custom uprating", () => {

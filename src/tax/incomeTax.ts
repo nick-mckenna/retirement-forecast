@@ -55,7 +55,14 @@ function splitBands(amount: number, cum: number, p: TaxYearParams): BandSplit {
  * then dividends. Savings get the starting-rate band + personal savings allowance at 0%;
  * dividends get the dividend allowance at 0%. PA is tapered above the taper threshold.
  */
-export function computeIncomeTax(parts: IncomeParts, p: TaxYearParams): IncomeTaxResult {
+/** Marriage-allowance adjustments: the transferor gives up `paReduction` of personal
+ *  allowance; the recipient gets `taxReducer` off their income tax (never below zero). */
+export interface IncomeTaxAdjustment {
+  paReduction?: number;
+  taxReducer?: number;
+}
+
+export function computeIncomeTax(parts: IncomeParts, p: TaxYearParams, adj: IncomeTaxAdjustment = {}): IncomeTaxResult {
   const nonSavings = Math.max(0, parts.nonSavings);
   const savings = Math.max(0, parts.savings);
   const dividends = Math.max(0, parts.dividends);
@@ -63,7 +70,7 @@ export function computeIncomeTax(parts: IncomeParts, p: TaxYearParams): IncomeTa
 
   const paEff = Math.max(
     0,
-    p.personalAllowance - Math.max(0, (total - p.paTaperThreshold) / 2),
+    p.personalAllowance - Math.max(0, (total - p.paTaperThreshold) / 2) - (adj.paReduction ?? 0),
   );
 
   // Allocate personal allowance: non-savings, then savings, then dividends.
@@ -122,7 +129,7 @@ export function computeIncomeTax(parts: IncomeParts, p: TaxYearParams): IncomeTa
     cum = s.cum;
   }
 
-  const tax = round2(nonSavingsTax + savingsTax + dividendTax);
+  const tax = round2(Math.max(0, nonSavingsTax + savingsTax + dividendTax - (adj.taxReducer ?? 0)));
 
   return {
     tax,

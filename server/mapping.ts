@@ -49,6 +49,8 @@ export interface ScenarioRow {
   taxIndexation: string;
   taxUprating: SqlNum;
   finalIncomeDate: SqlDate;
+  married: SqlBool;
+  statePensionGrowth: SqlNum | null;
   schemaVersion: SqlNum;
   sortOrder: number;
 }
@@ -59,8 +61,9 @@ export interface PersonRow {
   name: string;
   dob: SqlDate;
   pensionAccessAge: SqlNum;
-  statePensionAge: SqlNum;
+  statePensionAge: SqlNum | null;
   statePensionAnnual: SqlNum;
+  lumpSumAllowanceUsed: SqlNum;
   isa: SqlNum;
   pension: SqlNum;
   gia: SqlNum;
@@ -142,6 +145,8 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       taxIndexation: s.taxPolicy.indexation,
       taxUprating: s.taxPolicy.uprating,
       finalIncomeDate: s.finalIncome.date,
+      married: s.married,
+      statePensionGrowth: s.rates.statePensionGrowth,
       schemaVersion: s.schemaVersion,
       sortOrder,
     },
@@ -153,6 +158,7 @@ export function scenarioToRows(s: Scenario, sortOrder: number): ScenarioRows {
       pensionAccessAge: s.people[pid].pensionAccessAge,
       statePensionAge: s.people[pid].statePensionAge,
       statePensionAnnual: s.people[pid].statePensionAnnual,
+      lumpSumAllowanceUsed: s.people[pid].lumpSumAllowanceUsed,
       isa: s.balances[pid].isa,
       pension: s.balances[pid].pension,
       gia: s.balances[pid].gia,
@@ -197,8 +203,9 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
     name: row.name,
     dob: iso(row.dob),
     pensionAccessAge: num(row.pensionAccessAge),
-    statePensionAge: num(row.statePensionAge),
+    statePensionAge: row.statePensionAge == null ? null : num(row.statePensionAge),
     statePensionAnnual: num(row.statePensionAnnual),
+    lumpSumAllowanceUsed: num(row.lumpSumAllowanceUsed ?? 0),
   });
   const toBalances = (row: PersonRow) => ({
     isa: num(row.isa),
@@ -222,6 +229,7 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
       inflation: num(sc.inflation),
       giltCoupon: num(sc.giltCoupon),
       giaDividendYield: num(sc.giaDividendYield),
+      statePensionGrowth: sc.statePensionGrowth == null ? null : num(sc.statePensionGrowth),
     },
     income: {
       mode: sc.incomeMode as Scenario["income"]["mode"],
@@ -272,6 +280,7 @@ export function rowsToScenario(r: ScenarioRows): Scenario {
         date: iso(p.purchaseDate),
         amount: num(p.amount),
       })),
+    married: bool(sc.married ?? false),
     schemaVersion: num(sc.schemaVersion ?? 1),
   };
 

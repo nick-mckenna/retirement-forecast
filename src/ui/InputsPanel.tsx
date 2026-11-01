@@ -6,6 +6,8 @@ import { useExpenseStore } from "../store/expenseStore";
 import { resolveLinkedBalances } from "../preretirement/link";
 import { investableAssets, resolveIncome } from "../model/incomeTargets";
 import { firstModelledTaxYear, isIsoDate } from "../tax/taxYear";
+import { statutoryStatePensionAge } from "../tax/statePension";
+import { LUMP_SUM_ALLOWANCE } from "../tax/pensionDraw";
 import { money, pct } from "./format";
 
 /** A date input that only commits real dates. Clearing it, or a half-typed value, stays a
@@ -94,6 +96,52 @@ function PctField({
   );
 }
 
+/** A number input where blank means "use the default" (null) — the default shows as the
+ *  placeholder. `scale` converts a stored fraction to a displayed percentage (100). */
+function OptionalNumField({
+  label,
+  value,
+  placeholder,
+  onChange,
+  step = 1,
+  scale = 1,
+  suffix,
+}: {
+  label: string;
+  value: number | null;
+  placeholder: string;
+  onChange: (v: number | null) => void;
+  step?: number;
+  scale?: number;
+  suffix?: string;
+}) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <span>
+        <input
+          type="number"
+          step={step}
+          placeholder={placeholder}
+          value={value == null ? "" : Math.round(value * scale * 10000) / 10000}
+          onChange={(e) => {
+            const v = parseFloat(e.target.value);
+            onChange(e.target.value.trim() === "" || !Number.isFinite(v) ? null : v / scale);
+          }}
+        />
+        {suffix ? <span className="muted"> {suffix}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+/** "66y 7m" for a fractional age in years. */
+function ageLabel(years: number): string {
+  const y = Math.floor(years + 1e-9);
+  const m = Math.round((years - y) * 12);
+  return m === 0 ? `${y}` : `${y}y ${m}m`;
+}
+
 function ValueRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="field">
@@ -143,17 +191,30 @@ export function InputsPanel() {
           value={p.pensionAccessAge}
           onChange={(v) => set((sc) => (sc.people[id].pensionAccessAge = v))}
         />
-        <NumField
+        <OptionalNumField
           label="State pension age"
           value={p.statePensionAge}
+          step={0.25}
+          placeholder={isIsoDate(p.dob) ? `statutory: ${ageLabel(statutoryStatePensionAge(p.dob))}` : "statutory"}
           onChange={(v) => set((sc) => (sc.people[id].statePensionAge = v))}
         />
         <NumField
-          label="State pension / yr"
+          label="State pension / yr (first year)"
           value={p.statePensionAnnual}
           step={100}
           onChange={(v) => set((sc) => (sc.people[id].statePensionAnnual = v))}
         />
+        <NumField
+          label="Lump sum allowance used"
+          value={p.lumpSumAllowanceUsed}
+          step={1000}
+          onChange={(v) => set((sc) => (sc.people[id].lumpSumAllowanceUsed = Math.max(0, v)))}
+        />
+        <p className="muted" style={{ fontSize: 12, margin: "0 0 8px" }}>
+          Leave the State Pension age blank for the statutory date; the amount is per year in the first
+          modelled tax year. Tax-free cash already taken counts against the {money(LUMP_SUM_ALLOWANCE)} Lump
+          Sum Allowance — after it, pension draws are fully taxable.
+        </p>
         <div className="section-title">Starting balances</div>
         {lb ? (
           <>
@@ -191,6 +252,15 @@ export function InputsPanel() {
         <PctField label="Inflation" value={s.rates.inflation} onChange={(v) => update((sc) => (sc.rates.inflation = v))} />
         <PctField label="Gilt coupon" value={s.rates.giltCoupon} onChange={(v) => update((sc) => (sc.rates.giltCoupon = v))} />
         <PctField label="GIA dividend yield" value={s.rates.giaDividendYield} onChange={(v) => update((sc) => (sc.rates.giaDividendYield = v))} />
+        <OptionalNumField
+          label="State pension growth"
+          value={s.rates.statePensionGrowth}
+          scale={100}
+          step={0.1}
+          suffix="%"
+          placeholder={`triple lock: ${Math.round(Math.max(s.rates.inflation, 0.025) * 1000) / 10}`}
+          onChange={(v) => update((sc) => (sc.rates.statePensionGrowth = v))}
+        />
       </div>
 
       <div className="card">
@@ -290,6 +360,17 @@ export function InputsPanel() {
         <p className="muted" style={{ fontSize: 12, margin: "0 0 8px" }}>
           Starting balances are as at the end of this day; the forecast runs from the next day (a
           mid-year start models a part first tax year).
+        </p>
+        <div className="field">
+          <label>Married / civil partners</label>
+          <input
+            type="checkbox"
+            checked={s.married}
+            onChange={(e) => update((sc) => (sc.married = e.target.checked))}
+          />
+        </div>
+        <p className="muted" style={{ fontSize: 12, margin: "4px 0 8px" }}>
+          Applies the marriage allowance in years when it saves tax (both partners within the basic rate).
         </p>
         <div className="field">
           <label>Link to pre-retirement forecast</label>

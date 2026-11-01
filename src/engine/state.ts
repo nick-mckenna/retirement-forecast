@@ -1,5 +1,6 @@
 import type { PersonId, Scenario } from "../model/types";
 import { parseDate } from "../tax/taxYear";
+import { LUMP_SUM_ALLOWANCE } from "../tax/pensionDraw";
 
 export interface AccountState {
   isa: number;
@@ -8,6 +9,8 @@ export interface AccountState {
   savings: number;
   /** Cost basis of the GIA holding, for CGT on disposals (proportional cost method). */
   giaBasis: number;
+  /** Lump Sum Allowance still available: pension draws are 25% tax-free only while it lasts. */
+  lsaRemaining: number;
 }
 
 export interface GiltHolding {
@@ -40,6 +43,7 @@ export function initState(scenario: Scenario): SimState {
       gia: b.gia,
       savings: b.savings,
       giaBasis: b.gia * (1 - b.giaGainFraction),
+      lsaRemaining: Math.max(0, LUMP_SUM_ALLOWANCE - (scenario.people[id].lumpSumAllowanceUsed ?? 0)),
     };
   };
   const gilts: GiltHolding[] = [];

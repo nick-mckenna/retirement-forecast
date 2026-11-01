@@ -98,6 +98,8 @@ const SCHEMA: string[] = [
      taxIndexation NVARCHAR(10) NOT NULL CONSTRAINT DF_Scenario_taxIndexation DEFAULT N'custom',
      taxUprating FLOAT NOT NULL CONSTRAINT DF_Scenario_taxUprating DEFAULT 0,
      schemaVersion INT NOT NULL CONSTRAINT DF_Scenario_schemaVersion DEFAULT 1,
+     married BIT NOT NULL CONSTRAINT DF_Scenario_married DEFAULT 0,
+     statePensionGrowth FLOAT NULL,
      linkPreRetirement BIT NOT NULL CONSTRAINT DF_Scenario_linkPreRetirement DEFAULT 0,
      sortOrder INT NOT NULL CONSTRAINT DF_Scenario_sortOrder DEFAULT 0,
      updatedAt DATETIME2 NOT NULL CONSTRAINT DF_Scenario_updatedAt DEFAULT SYSUTCDATETIME()
@@ -110,8 +112,9 @@ const SCHEMA: string[] = [
      name NVARCHAR(100) NOT NULL,
      dob DATE NOT NULL,
      pensionAccessAge INT NOT NULL,
-     statePensionAge INT NOT NULL,
+     statePensionAge FLOAT NULL, -- NULL = the statutory State Pension age for the dob
      statePensionAnnual FLOAT NOT NULL,
+     lumpSumAllowanceUsed FLOAT NOT NULL CONSTRAINT DF_ScenarioPerson_lumpSumAllowanceUsed DEFAULT 0,
      isa FLOAT NOT NULL,
      pension FLOAT NOT NULL,
      gia FLOAT NOT NULL,
@@ -270,6 +273,18 @@ const SCHEMA: string[] = [
   `IF COL_LENGTH(N'dbo.Scenario', N'schemaVersion') IS NULL
    ALTER TABLE dbo.Scenario ADD schemaVersion INT NOT NULL
      CONSTRAINT DF_Scenario_schemaVersion DEFAULT 1`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'married') IS NULL
+   ALTER TABLE dbo.Scenario ADD married BIT NOT NULL CONSTRAINT DF_Scenario_married DEFAULT 0`,
+  `IF COL_LENGTH(N'dbo.Scenario', N'statePensionGrowth') IS NULL
+   ALTER TABLE dbo.Scenario ADD statePensionGrowth FLOAT NULL`,
+  `IF COL_LENGTH(N'dbo.ScenarioPerson', N'lumpSumAllowanceUsed') IS NULL
+   ALTER TABLE dbo.ScenarioPerson ADD lumpSumAllowanceUsed FLOAT NOT NULL
+     CONSTRAINT DF_ScenarioPerson_lumpSumAllowanceUsed DEFAULT 0`,
+  // State Pension age became an optional, fractional override (NULL = statutory).
+  `IF EXISTS (SELECT 1 FROM sys.columns
+             WHERE object_id = OBJECT_ID(N'dbo.ScenarioPerson') AND name = N'statePensionAge'
+               AND (is_nullable = 0 OR system_type_id <> TYPE_ID(N'float')))
+   ALTER TABLE dbo.ScenarioPerson ALTER COLUMN statePensionAge FLOAT NULL`,
   // Tax-parameter edits became sparse: every value column is nullable (NULL = not edited).
   ...LEGACY_TAX_PARAM_COLUMNS.map(
     (c) => `IF EXISTS (SELECT 1 FROM sys.columns

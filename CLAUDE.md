@@ -129,6 +129,16 @@ Scenario (src/model/types.ts)  ──simulate()──▶  SimResult { rows, year
   uprated separately and is unaffected. One-off shape changes in `migrate.ts` are gated on
   `Scenario.schemaVersion` (`SCHEMA_VERSION` in `defaults.ts`) so each runs once; v1 → v2 turned the
   old `{2031, 0%}` default into statutory and reduced stored rows to their genuinely edited fields.
+- **Person-level allowances.** Pension draws are 25% tax-free only while the **Lump Sum Allowance**
+  lasts (£268,275, `src/tax/pensionDraw.ts`; `Person.lumpSumAllowanceUsed` records tax-free cash
+  already taken, `AccountState.lsaRemaining` tracks the rest): every place that turns a pension draw
+  into taxable income goes through `pensionTaxable` / `pensionGrossForTaxable` and records
+  `Withdrawal.lsaUsed` — never a hard-coded 0.75. **State Pension age** is statutory from the date of
+  birth (`statutoryStatePensionDate`, the legislated 66 → 67 → 68 tables) unless
+  `Person.statePensionAge` overrides it (fractional years allowed); it is paid monthly from that date
+  and uprated by `rates.statePensionGrowth`, or the triple-lock floor `max(inflation, 2.5%)` when
+  null. **Marriage allowance** (`Scenario.married`, `coupleYearTax`) is applied when both partners are
+  within the basic rate and it saves tax.
 
 ## Pre-retirement forecast
 

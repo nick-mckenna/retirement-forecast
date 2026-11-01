@@ -9,6 +9,7 @@ import {
 import { defaultScenario, SCHEMA_VERSION } from "./defaults";
 import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 import { firstModelledTaxYear, isIsoDate } from "../tax/taxYear";
+import { statutoryStatePensionAge } from "../tax/statePension";
 
 /**
  * Backfill fields added in later versions so older saved scenarios (from the
@@ -32,10 +33,24 @@ export function migrateScenario(s: Scenario): Scenario {
   // A cleared/garbled start date has no handoff month and used to hang the projection:
   // repair it to the day before the first modelled tax year.
   const startDate = isIsoDate(s.startDate) ? s.startDate : `${s.income.startYear}-04-05`;
+  const person = (id: PersonId) => {
+    const p = s.people[id];
+    let statePensionAge = p.statePensionAge ?? null;
+    // v3: State Pension age became an optional override (null = statutory). An old whole-year
+    // age that is just the statutory age in whole years (e.g. 66 for someone due 66y 7m)
+    // becomes statutory, so the legislated months apply.
+    if (version < 3 && statePensionAge != null && isIsoDate(p.dob)) {
+      if (Math.floor(statutoryStatePensionAge(p.dob)) === statePensionAge) statePensionAge = null;
+    }
+    return { ...p, statePensionAge, lumpSumAllowanceUsed: p.lumpSumAllowanceUsed ?? 0 };
+  };
   return {
     ...s,
     startDate,
     linkPreRetirement: s.linkPreRetirement ?? false,
+    people: { nick: person("nick"), tracy: person("tracy") },
+    rates: { ...s.rates, statePensionGrowth: s.rates.statePensionGrowth ?? null },
+    married: s.married ?? false,
     income: {
       ...s.income,
       mode: s.income.mode ?? "fixed",

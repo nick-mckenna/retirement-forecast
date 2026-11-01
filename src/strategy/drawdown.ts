@@ -1,5 +1,11 @@
 import type { PersonId, StrategyConfig, TaxYearParams } from "../model/types";
 import type { SimState } from "../engine/state";
+import {
+  LUMP_SUM_ALLOWANCE,
+  lsaUsedBy,
+  marginalTaxableShare,
+  pensionGrossForTaxable,
+} from "../tax/pensionDraw";
 
 export type Source = "pension" | "gia" | "gilt" | "isa";
 /** Sources the marginal optimiser can draw from (gilts are the buffer, not a raise source). */
@@ -10,10 +16,13 @@ export interface Withdrawal {
   source: Source;
   /** Amount removed from the source pot. */
   gross: number;
-  /** Taxable non-savings income created (pension: 75% of gross). */
+  /** Taxable non-savings income created (pension: 75% of gross while the Lump Sum Allowance
+   *  lasts, all of it after). */
   taxableNonSavings: number;
   /** Capital gain realised (GIA only; gilts are CGT-exempt). */
   realisedGain: number;
+  /** Tax-free pension cash used out of the Lump Sum Allowance (pension only). */
+  lsaUsed: number;
   decisionKey: string;
 }
 
@@ -27,6 +36,8 @@ interface PersonPlan {
   otherIncome: number;
   cgtAllowanceRemaining: number;
   gainFraction: number;
+  /** Lump Sum Allowance left as the plan draws pension. */
+  lsaRemaining: number;
   p: TaxYearParams;
 }
 
@@ -41,7 +52,7 @@ interface Step {
   effect: (
     plan: PersonPlan,
     gross: number,
-  ) => { taxableNonSavings: number; realisedGain: number };
+  ) => { taxableNonSavings: number; realisedGain: number; lsaUsed: number };
 }
 
 function pensionWithinBand(bandTop: number, netOfOtherIncome: boolean) {
@@ -49,19 +60,21 @@ function pensionWithinBand(bandTop: number, netOfOtherIncome: boolean) {
     if (!plan.pensionAccessible) return 0;
     const pot = state.balances[plan.person].pension;
     if (pot <= 0) return 0;
-    // 75% of the gross is taxable; keep taxable within the band top. Above the personal
-    // allowance the year's savings and dividends stack on top, so they use up band room too.
+    // Keep the taxable part within the band top (75% of the gross while the Lump Sum Allowance
+    // lasts, all of it after). Above the personal allowance the year's savings and dividends
+    // stack on top, so they use up band room too.
     const top = netOfOtherIncome ? bandTop - plan.otherIncome : bandTop;
     const taxableRoom = Math.max(0, top - plan.runningNonSavings);
-    const grossForRoom = taxableRoom / 0.75;
-    return Math.min(pot, grossForRoom);
+    return Math.min(pot, pensionGrossForTaxable(taxableRoom, plan.lsaRemaining));
   };
 }
 
 function pensionEffect(plan: PersonPlan, gross: number) {
-  const taxable = gross * 0.75;
+  const lsaUsed = lsaUsedBy(gross, plan.lsaRemaining);
+  const taxable = gross - lsaUsed;
+  plan.lsaRemaining -= lsaUsed;
   plan.runningNonSavings += taxable;
-  return { taxableNonSavings: taxable, realisedGain: 0 };
+  return { taxableNonSavings: taxable, realisedGain: 0, lsaUsed };
 }
 
 function giaWithinCgtAllowance() {
@@ -80,7 +93,7 @@ function giaAny() {
 function giaEffect(plan: PersonPlan, gross: number) {
   const gain = gross * plan.gainFraction;
   plan.cgtAllowanceRemaining = Math.max(0, plan.cgtAllowanceRemaining - gain);
-  return { taxableNonSavings: 0, realisedGain: gain };
+  return { taxableNonSavings: 0, realisedGain: gain, lsaUsed: 0 };
 }
 
 function buildSteps(plans: Record<PersonId, PersonPlan>, config: StrategyConfig): Step[] {
@@ -137,7 +150,7 @@ function buildSteps(plans: Record<PersonId, PersonPlan>, config: StrategyConfig)
       source: "isa",
       priority: isaPriority,
       available: (_pl, state) => state.balances[person].isa,
-      effect: () => ({ taxableNonSavings: 0, realisedGain: 0 }),
+      effect: () => ({ taxableNonSavings: 0, realisedGain: 0, lsaUsed: 0 }),
     });
     // 6. Pension up to the higher-rate band.
     steps.push({
@@ -175,6 +188,8 @@ export function makePlan(
   /** Gains already realised this tax year (Bed & ISA, earlier sales): they use the CGT
    *  exempt amount first, so "within the allowance" sales only get what is left. */
   gainSoFar = 0,
+  /** Lump Sum Allowance still available (defaults to the full allowance). */
+  lsaRemaining = LUMP_SUM_ALLOWANCE,
 ): PersonPlan {
   return {
     person,
@@ -183,6 +198,7 @@ export function makePlan(
     otherIncome,
     cgtAllowanceRemaining: Math.max(0, p.cgtAnnualExempt - gainSoFar),
     gainFraction: Math.max(0, Math.min(1, gainFraction)),
+    lsaRemaining: Math.max(0, lsaRemaining),
     p,
   };
 }
@@ -230,6 +246,7 @@ export function raiseCash(
       gross: take,
       taxableNonSavings: eff.taxableNonSavings,
       realisedGain: eff.realisedGain,
+      lsaUsed: eff.lsaUsed,
       decisionKey: `${ctx.year}:refill:${step.person}:${step.source}:${step.priority}`,
     });
     need -= take;
@@ -264,7 +281,9 @@ function marginalCost(source: Source, plan: PersonPlan): number {
   if (source === "isa" || source === "gilt") return 0;
   // Savings and dividends sit on top of pension income, so the next £1 of pension is priced at
   // the top of the stack (it pushes £1 of them up the bands).
-  if (source === "pension") return 0.75 * marginalIncomeRate(plan.runningNonSavings + plan.otherIncome, plan.p);
+  if (source === "pension") {
+    return marginalTaxableShare(plan.lsaRemaining) * marginalIncomeRate(plan.runningNonSavings + plan.otherIncome, plan.p);
+  }
   // GIA: only the gain fraction is taxable, and only above the CGT annual exempt amount.
   if (plan.cgtAllowanceRemaining > 0.5) return 0;
   const cgtRate =
@@ -275,17 +294,9 @@ function marginalCost(source: Source, plan: PersonPlan): number {
 }
 
 function applyMarginal(source: Source, plan: PersonPlan, take: number) {
-  if (source === "pension") {
-    const taxable = take * 0.75;
-    plan.runningNonSavings += taxable;
-    return { taxableNonSavings: taxable, realisedGain: 0 };
-  }
-  if (source === "gia") {
-    const gain = take * plan.gainFraction;
-    plan.cgtAllowanceRemaining = Math.max(0, plan.cgtAllowanceRemaining - gain);
-    return { taxableNonSavings: 0, realisedGain: gain };
-  }
-  return { taxableNonSavings: 0, realisedGain: 0 };
+  if (source === "pension") return pensionEffect(plan, take);
+  if (source === "gia") return giaEffect(plan, take);
+  return { taxableNonSavings: 0, realisedGain: 0, lsaUsed: 0 };
 }
 
 /**
@@ -306,7 +317,10 @@ export function raiseCashMarginal(
   };
   const taken: Record<string, Withdrawal> = {};
 
-  const step = Math.max(500, grossTarget / 600);
+  // The increment scales with the target (for speed) but in whole £500 steps, so it only
+  // changes when T crosses a step boundary: the year-end refill solves a fixed point in T,
+  // which a continuously T-dependent increment would make jumpy.
+  const step = Math.max(500, Math.ceil(grossTarget / 600 / 500) * 500);
   let need = grossTarget;
   let guard = 0;
   const maxIters = Math.ceil(grossTarget / step) + 100;
@@ -335,11 +349,13 @@ export function raiseCashMarginal(
       gross: 0,
       taxableNonSavings: 0,
       realisedGain: 0,
+      lsaUsed: 0,
       decisionKey: `${ctx.year}:${best.person}:${best.source}`,
     });
     w.gross += take;
     w.taxableNonSavings += eff.taxableNonSavings;
     w.realisedGain += eff.realisedGain;
+    w.lsaUsed += eff.lsaUsed;
     need -= take;
   }
   return Object.values(taken);

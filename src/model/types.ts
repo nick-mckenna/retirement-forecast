@@ -13,10 +13,14 @@ export interface Person {
   dob: string;
   /** Age at which this person can first access their (DC) pension. Default 57 from Apr 2028. */
   pensionAccessAge: number;
-  /** Age at which the State Pension starts. */
-  statePensionAge: number;
-  /** Annual State Pension in today's money at the model start; inflated to payment date. */
+  /** Age at which the State Pension starts, as an override (fractional years allowed, e.g.
+   *  66.25 = 66y 3m); null = the statutory date for their date of birth. */
+  statePensionAge: number | null;
+  /** Annual State Pension for the first modelled tax year; uprated from there. */
   statePensionAnnual: number;
+  /** Tax-free pension cash already taken (or protected) before the model starts, out of the
+   *  £268,275 Lump Sum Allowance — later draws are 25% tax-free only until it is used up. */
+  lumpSumAllowanceUsed: number;
 }
 
 export interface StartingBalances {
@@ -44,6 +48,8 @@ export interface Rates {
   giltCoupon: number;
   /** Assumed dividend yield within the GIA (taxable as dividends). 0 to ignore. */
   giaDividendYield: number;
+  /** Annual State Pension uprating; null = the triple lock floor, max(inflation, 2.5%). */
+  statePensionGrowth: number | null;
 }
 
 /**
@@ -201,6 +207,8 @@ export interface Scenario {
   overrides: Override[];
   /** One-off large cash requirements (house purchase, car, etc.). */
   purchases: OneOffPurchase[];
+  /** Married or civil partners: the marriage allowance is applied when it helps. */
+  married: boolean;
   /** Shape version of this saved scenario; `migrateScenario` upgrades older ones once. */
   schemaVersion: number;
 }

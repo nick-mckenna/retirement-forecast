@@ -2,7 +2,7 @@ import type { Scenario } from "./types";
 import { DEFAULT_TAX_POLICY } from "../tax/taxParams";
 
 /** Current `Scenario.schemaVersion`; `migrateScenario` upgrades anything older, once. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Default scenario — illustrative sample data only.
@@ -21,16 +21,18 @@ export function defaultScenario(): Scenario {
         name: "Person A",
         dob: "1975-03-15",
         pensionAccessAge: 57, // NMPA rises to 57 on 6 Apr 2028 -> accesses 2032
-        statePensionAge: 67,
+        statePensionAge: null, // statutory: 67 for these dates of birth
         statePensionAnnual: 11500,
+        lumpSumAllowanceUsed: 0,
       },
       tracy: {
         id: "tracy",
         name: "Person B",
         dob: "1970-05-15",
         pensionAccessAge: 55, // already 57+ at the start regardless
-        statePensionAge: 67,
+        statePensionAge: null, // statutory: 67 for these dates of birth
         statePensionAnnual: 11500,
+        lumpSumAllowanceUsed: 0,
       },
     },
     balances: {
@@ -43,6 +45,7 @@ export function defaultScenario(): Scenario {
       inflation: 0.03,
       giltCoupon: 0.04,
       giaDividendYield: 0.02,
+      statePensionGrowth: null, // triple lock floor
     },
     income: {
       mode: "fixed",
@@ -71,6 +74,7 @@ export function defaultScenario(): Scenario {
     taxParams: [],
     overrides: [],
     purchases: [],
+    married: false,
     schemaVersion: SCHEMA_VERSION,
   };
 }

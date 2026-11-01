@@ -1,8 +1,9 @@
 import type { PersonId, Scenario } from "../model/types";
 import { annualToMonthly } from "../model/rates";
 import { resolveIncome, targetForYear } from "../model/incomeTargets";
-import { personYearTax } from "../tax/personTax";
-import { statePensionForYear } from "../tax/statePension";
+import { coupleYearTax } from "../tax/personTax";
+import { statePensionGrowth, statePensionInPeriod, statePensionRate, statePensionStartDate } from "../tax/statePension";
+import { lsaUsedBy, pensionGrossForTaxable } from "../tax/pensionDraw";
 import { resolveTaxParams } from "../tax/taxParams";
 import { ageAtTaxYearStart, ageOn, addMonths, modelStartDate, parseDate, toIso } from "../tax/taxYear";
 import { bufferTarget, currentBuffer } from "../strategy/buffer";
@@ -148,6 +149,11 @@ export function simulate(scenario: Scenario): SimResult {
   const modelStart = modelStartDate(scenario.startDate);
   const income = resolveIncome(scenario);
   const modelStartYear = income.startYear;
+  const spGrowth = statePensionGrowth(scenario.rates);
+  const spStart: Record<PersonId, Date> = {
+    nick: statePensionStartDate(scenario.people.nick),
+    tracy: statePensionStartDate(scenario.people.tracy),
+  };
   if (scenario.income.startYear !== income.startYear) {
     warnings.push(
       `The income start year (${scenario.income.startYear}) didn't match the start date — modelling from ` +
@@ -241,10 +247,11 @@ export function simulate(scenario: Scenario): SimResult {
     const yearFraction = (12 - firstMonth) / 12;
     const openIso = toIso(firstMonth === 0 ? yearStart : modelStart);
 
-    // State pension (annual figure; credited monthly below).
-    const statePension: Record<PersonId, number> = {
-      nick: statePensionForYear(scenario.people.nick, y, modelStartYear, scenario.rates.inflation),
-      tracy: statePensionForYear(scenario.people.tracy, y, modelStartYear, scenario.rates.inflation),
+    // State pension: this year's full annual rate (uprated by the triple-lock floor unless the
+    // scenario sets a growth rate), paid monthly from each person's State Pension start date.
+    const spRate: Record<PersonId, number> = {
+      nick: statePensionRate(scenario.people.nick, y, modelStartYear, spGrowth),
+      tracy: statePensionRate(scenario.people.tracy, y, modelStartYear, spGrowth),
     };
 
     const mode = scenario.strategy.taxMode ?? "heuristic";
@@ -283,9 +290,10 @@ export function simulate(scenario: Scenario): SimResult {
     // This year's income tax + CGT per person from the accumulators so far, plus any `extra`
     // withdrawals not yet applied. Pure, so the year end can provision cash for the bill
     // (including the tax its own sales create) before paying it with the same calculation.
+    // The couple is taxed together only through the marriage allowance (coupleYearTax).
     const assessTax = (extra: Withdrawal[] = []): Record<PersonId, PersonTax> => {
       const out: Record<PersonId, PersonTax> = { nick: blankTax(), tracy: blankTax() };
-      for (const id of PERSONS) {
+      const income = (id: PersonId) => {
         let extraNonSavings = 0;
         let extraGain = 0;
         for (const w of extra) {
@@ -293,13 +301,20 @@ export function simulate(scenario: Scenario): SimResult {
           extraNonSavings += w.taxableNonSavings;
           extraGain += w.realisedGain;
         }
-        const parts = {
+        return {
           nonSavings: accum.taxableNonSavings[id] + extraNonSavings + accum.statePension[id],
           savings: accum.savingsIncome[id],
           dividends: accum.dividends[id],
+          gain: accum.realisedGain[id] + extraGain,
         };
-        const gain = accum.realisedGain[id] + extraGain;
-        const t = personYearTax({ ...parts, gain }, p);
+      };
+      const inc = { nick: income("nick"), tracy: income("tracy") };
+      const both = coupleYearTax(inc.nick, inc.tracy, p, scenario.married);
+      const taxes = { nick: both.a, tracy: both.b };
+      for (const id of PERSONS) {
+        const parts = inc[id];
+        const gain = parts.gain;
+        const t = taxes[id];
         out[id] = {
           incomeTax: t.incomeTax,
           cgt: t.cgt,
@@ -437,21 +452,22 @@ export function simulate(scenario: Scenario): SimResult {
       }
       txRow("Growth", toIso(monthDate), gd);
 
-      // State pension credited monthly as cash; taxable non-savings income for the year.
-      if (statePension.nick > 0 || statePension.tracy > 0) {
-        const sd: Partial<Record<PersonId, Partial<PersonColumns>>> = {};
+      const nextMonth = addMonths(yearStart, m + 1).getTime();
+
+      // State pension credited monthly as cash (from the start date, the first month pro-rated);
+      // taxable non-savings income for the year.
+      {
+        const sd: Deltas = {};
         for (const id of PERSONS) {
-          const amt = statePension[id] / 12;
+          const amt = statePensionInPeriod(spStart[id], monthDate, new Date(nextMonth), spRate[id]);
           if (amt > 0) {
             state.balances[id].savings += amt;
             accum.statePension[id] += amt;
             sd[id] = { savings: amt, income: amt };
           }
         }
-        txRow("State Pension", toIso(monthDate), sd);
+        if (Object.keys(sd).length) txRow("State Pension", toIso(monthDate), sd);
       }
-
-      const nextMonth = addMonths(yearStart, m + 1).getTime();
 
       // Final employment income landing this month: earnings of this tax year.
       if (!finalIncomeHandled && fiAt >= monthDate.getTime() && fiAt < nextMonth) {
@@ -539,6 +555,7 @@ export function simulate(scenario: Scenario): SimResult {
         for (const w of topUp) {
           const acc = state.balances[w.person];
           acc.pension -= w.gross; // crystallise pension
+          acc.lsaRemaining -= w.lsaUsed;
           accum.taxableNonSavings[w.person] += w.taxableNonSavings;
           disposals.sales[w.person].pension += w.gross;
           withdrawals.push(w);
@@ -694,15 +711,18 @@ function lifetimeTopUp(
     if (room <= 1) continue;
     const pot = state.balances[id].pension;
     if (pot <= 1) continue;
-    const gross = Math.min(pot, room / 0.75);
+    const gross = Math.min(pot, pensionGrossForTaxable(room, plan.lsaRemaining));
     if (gross <= 1) continue;
-    plan.runningNonSavings += gross * 0.75;
+    const lsaUsed = lsaUsedBy(gross, plan.lsaRemaining);
+    plan.lsaRemaining -= lsaUsed;
+    plan.runningNonSavings += gross - lsaUsed;
     out.push({
       person: id,
       source: "pension",
       gross,
-      taxableNonSavings: gross * 0.75,
+      taxableNonSavings: gross - lsaUsed,
       realisedGain: 0,
+      lsaUsed,
       decisionKey: `topup:${id}`,
     });
   }
@@ -725,7 +745,8 @@ function mkPlan(
 ) {
   const accessible = ageOn(scenario.people[id].dob, onDate) >= scenario.people[id].pensionAccessAge;
   const gainFraction = giaGainFraction(state.balances[id]);
-  return makePlan(id, accessible, income.nonSavings, gainFraction, p, income.other, income.gainSoFar);
+  const lsa = state.balances[id].lsaRemaining;
+  return makePlan(id, accessible, income.nonSavings, gainFraction, p, income.other, income.gainSoFar, lsa);
 }
 
 /** Apply a withdrawal to the balances; returns the capital gain it realised (GIA only, from
@@ -733,8 +754,10 @@ function mkPlan(
 function applyWithdrawal(state: SimState, w: Withdrawal): number {
   const acc = state.balances[w.person];
   let gain = 0;
-  if (w.source === "pension") acc.pension -= w.gross;
-  else if (w.source === "isa") acc.isa -= w.gross;
+  if (w.source === "pension") {
+    acc.pension -= w.gross;
+    acc.lsaRemaining -= w.lsaUsed;
+  } else if (w.source === "isa") acc.isa -= w.gross;
   else if (w.source === "gia") gain = sellGia(acc, w.gross).gain;
   else if (w.source === "gilt") sellGilts(state, w.person, w.gross);
   acc.savings += w.gross;
@@ -802,6 +825,7 @@ function applyOverrides(
       cur.gross += w.gross;
       cur.taxableNonSavings += w.taxableNonSavings;
       cur.realisedGain += w.realisedGain;
+      cur.lsaUsed += w.lsaUsed;
     } else {
       byKey.set(key, { ...w, decisionKey: key });
     }
@@ -810,7 +834,8 @@ function applyOverrides(
     if (overrides.has(key)) {
       const amt = overrides.get(key)!;
       w.gross = amt;
-      w.taxableNonSavings = w.source === "pension" ? amt * 0.75 : 0;
+      w.lsaUsed = w.source === "pension" ? lsaUsedBy(amt, state.balances[w.person].lsaRemaining) : 0;
+      w.taxableNonSavings = w.source === "pension" ? amt - w.lsaUsed : 0;
       w.realisedGain = w.source === "gia" ? amt * giaGainFraction(state.balances[w.person]) : 0;
     }
   }
